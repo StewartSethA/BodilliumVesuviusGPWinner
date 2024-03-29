@@ -106,7 +106,7 @@ class CFG:
     max_grad_norm = 100
 
     print_freq = 50
-    num_workers = 32
+    num_workers = 10
 
     seed = 0
 
@@ -586,7 +586,7 @@ for fid in fragments:
     trainer = pl.Trainer(
         max_epochs=12,
         accelerator="gpu",
-        devices=4,
+        devices=1,
         logger=wandb_logger,
         default_root_dir="/content/gdrive/MyDrive/vesuvius_model/training/outputs",
         accumulate_grad_batches=1,
