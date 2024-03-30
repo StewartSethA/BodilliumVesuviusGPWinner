@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from timesformer_pytorch import TimeSformer
 import torch
 from warmup_scheduler import GradualWarmupScheduler
-import wandb
+#import wandb
 import random
 import gc
 import pytorch_lightning as pl
@@ -20,11 +20,10 @@ import os
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import PIL.Image
+from PIL import Image
 PIL.Image.MAX_IMAGE_PIXELS = 933120000
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from tap import Tap
-import glob
-
 class InferenceArgumentParser(Tap):
     segment_id: list[str] =['20231005123336']
     segment_path:str='/content/gdrive/MyDrive/vesuvius_model/volume/segments'
@@ -37,7 +36,6 @@ class InferenceArgumentParser(Tap):
     size:int=64
     reverse:int=0
     device:str='cuda'
-    format='tif'
 args = InferenceArgumentParser().parse_args()
 def gkern(kernlen=21, nsig=3):
     """Returns a 2D Gaussian kernel."""
@@ -111,30 +109,20 @@ def read_image_mask(fragment_id,start_idx=18,end_idx=38,rotation=0):
     end = mid + CFG.in_chans // 2
     idxs = range(start_idx, end_idx)
     for i in idxs:
-        image = cv2.imread(f"{args.segment_path}/{fragment_id}/layers/{i:02}.{args.format}", 0)
+        image = cv2.imread(f"{args.segment_path}/{fragment_id}/layers/{i:02}.tif", 0)
         pad0 = (256 - image.shape[0] % 256)
         pad1 = (256 - image.shape[1] % 256)
         image = np.pad(image, [(0, pad0), (0, pad1)], constant_values=0)
         image=np.clip(image,0,200)
         images.append(image)
     images = np.stack(images, axis=2)
-    if args.reverse != 0 or fragment_id in ['20230701020044','verso','20230901184804','20230901234823','20230531193658','20231007101615','20231005123333','20231011144857','20230522215721', '20230919113918', '20230625171244','20231022170900','20231012173610','20231016151000']:
-        print("Reverse Segment")
+    if fragment_id in ['20230701020044','verso','20230901184804','20230901234823','20230531193658','20231007101615','20231005123333','20231011144857','20230522215721', '20230919113918', '20230625171244','20231022170900','20231012173610','20231016151000']:
         images=images[:,:,::-1]
 
     fragment_mask=None
-    wildcard_path_mask = f'{args.segment_path}/{fragment_id}/*_mask.png'
     if os.path.exists(f'{args.segment_path}/{fragment_id}/{fragment_id}_mask.png'):
         fragment_mask=cv2.imread(CFG.comp_dataset_path + f"{args.segment_path}/{fragment_id}/{fragment_id}_mask.png", 0)
         fragment_mask = np.pad(fragment_mask, [(0, pad0), (0, pad1)], constant_values=0)
-    elif len(glob.glob(wildcard_path_mask)) > 0:
-        # any *mask.png exists
-        mask_path = glob.glob(wildcard_path_mask)[0]
-        fragment_mask = cv2.imread(mask_path, 0)
-        fragment_mask = np.pad(fragment_mask, [(0, pad0), (0, pad1)], constant_values=0)
-    else:
-        # White mask
-        fragment_mask = np.ones_like(images[:,:,0]) * 255
 
     return images,fragment_mask
 
@@ -308,15 +296,15 @@ def predict_fn(test_loader, model, device, test_xyxys,pred_shape):
 import gc
 
 if __name__ == "__main__":
-    model=RegressionPLModel.load_from_checkpoint(args.model_path,strict=False)
-    model.cuda()
+    model=RegressionPLModel.load_from_checkpoint(args.model_path,strict=False, map_location=device)
+    model.to(device)
     model.eval()
-    wandb.init(
-        project="Vesuvius", 
-        name=f"ALL_scrolls_tta", 
-        )
+    #wandb.init(
+    #    project="Vesuvius", 
+    #    name=f"ALL_scrolls_tta", 
+    #    )
     for fragment_id in args.segment_id:
-        if os.path.exists(f"{args.segment_path}/{fragment_id}/layers/00.{args.format}"):
+        if os.path.exists(f"{args.segment_path}/{fragment_id}/layers/00.tif"):
             preds=[]
             for r in [0]:
                 for i in [17]:
@@ -326,26 +314,20 @@ if __name__ == "__main__":
                     mask_pred= predict_fn(test_loader, model, device, test_xyxz,test_shape)
                     mask_pred=np.clip(np.nan_to_num(mask_pred),a_min=0,a_max=1)
                     mask_pred/=mask_pred.max()
+                    mask_pred = (mask_pred * 255).astype(np.uint8)
 
                     preds.append(mask_pred)
-
-            img=wandb.Image(
-            preds[0], 
-            caption=f"{fragment_id}"
-            )
-            wandb.log({'predictions':img})
+            
+            os.makedirs(f'{args.out_path}', exist_ok=True)
+            img = Image.fromarray(preds[0])
+            img.save(f'{args.out_path}/{fragment_id}.png')
+            #img=wandb.Image(
+            #preds[0], 
+            #caption=f"{fragment_id}"
+            #)
+            #wandb.log({'predictions':img})
             gc.collect()
-
-            if len(args.out_path) > 0:
-                # CV2 image
-                image_cv = (mask_pred * 255).astype(np.uint8)
-                try:
-                    os.makedirs(args.out_path,exist_ok=True)
-                except:
-                    pass
-                cv2.imwrite(os.path.join(args.out_path, f"{fragment_id}_prediction.png"), image_cv)
-
     del mask_pred,test_loader,model
     torch.cuda.empty_cache()
     gc.collect()
-    wandb.finish()
+    #wandb.finish()
