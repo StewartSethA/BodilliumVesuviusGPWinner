@@ -49,9 +49,9 @@ class CFG:
     comp_name = 'vesuvius'
 
     # comp_dir_path = './'
-    comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model'
-    comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model'
-    comp_dataset_path = f'/content/gdrive/MyDrive/vesuvius_model/volume/segments'
+    comp_dir_path = './'
+    comp_folder_name = './'
+    comp_dataset_path = ''
     
     exp_name = 'pretraining_all'
     # ============== model cfg =============
@@ -74,7 +74,7 @@ class CFG:
     # lr = 1e-4 / warmup_factor
     lr = 1e-4 / warmup_factor
     min_lr = 1e-6
-    num_workers = 16
+    num_workers = 12
     seed = 42
     # ============== augmentation =============
     valid_aug_list = [
