@@ -28,6 +28,7 @@ import cv2
 
 import scipy as sp
 import numpy as np
+import fastnumpyio as fnp
 import pandas as pd
 
 from tqdm.auto import tqdm
@@ -49,16 +50,27 @@ import torch.nn as nn
 import torch
 from warmup_scheduler import GradualWarmupScheduler
 from scipy import ndimage
+import time
+import json
+import numba
+from numba import jit
 
 class CFG:
     # ============== comp exp name =============
     comp_name = 'vesuvius'
 
     # comp_dir_path = './'
+<<<<<<< HEAD
     comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model/training/'
     comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model/training/'
     # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
     comp_dataset_path = f'/content/gdrive/MyDrive/vesuvius_model/training/'
+=======
+    comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model/training'
+    comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model/training'
+    # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
+    comp_dataset_path = '/content/gdrive/MyDrive/vesuvius_model/training'
+>>>>>>> pr/1
     
     exp_name = 'pretraining_all'
 
@@ -210,7 +222,15 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
     end = mid + CFG.in_chans // 2
     idxs = range(start_idx, end_idx)
 
-    for i in idxs:
+
+    t = time.time()
+    if os.path.isfile(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy"):
+      images = np.load(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy")
+      pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
+      pad1 = (CFG.tile_size - images.shape[1] % CFG.tile_size)
+      print(time.time()-t, "seconds taken to load images from", CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy")
+    else:
+      for i in idxs:
         
         image = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{i:02}.tif", 0)
 
@@ -218,7 +238,7 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
         pad1 = (CFG.tile_size - image.shape[1] % CFG.tile_size)
 
         image = np.pad(image, [(0, pad0), (0, pad1)], constant_values=0)
-        # image = ndimage.median_filter(image, size=5)
+        # image = ndimage.median_filter(image, size=5) # TODO: Why median filtering?
         
         # image = cv2.resize(image, (image.shape[1]//2,image.shape[0]//2), interpolation = cv2.INTER_AREA)
         if 'frag' in fragment_id:
@@ -227,7 +247,13 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
         if fragment_id=='20230827161846':
             image=cv2.flip(image,0)
         images.append(image)
-    images = np.stack(images, axis=2)
+      print(time.time()-t, "seconds taken to load images.")
+      images = np.stack(images, axis=2)
+      t = time.time()
+      print(time.time()-t, "seconds taken to stack images.")
+      t = time.time()
+      np.save(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy", images)
+      print(time.time()-t, "seconds taken to save images as npy.")
     if fragment_id in ['20230701020044','verso','20230901184804','20230901234823','20230531193658','20231007101615','20231005123333','20231011144857','20230522215721', '20230919113918', '20230625171244','20231022170900','20231012173610','20231016151000']:
 
         images=images[:,:,::-1]
@@ -249,55 +275,102 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
         fragment_mask = cv2.resize(fragment_mask, (fragment_mask.shape[1]//2,fragment_mask.shape[0]//2), interpolation = cv2.INTER_AREA)
         mask = cv2.resize(mask , (mask.shape[1]//2,mask.shape[0]//2), interpolation = cv2.INTER_AREA)
 
-    mask = mask.astype('float32')
-    mask/=255
+    print("images.shape,dtype", images.shape, images.dtype, "mask", mask.shape, mask.dtype, "fragment_mask", fragment_mask.shape, fragment_mask.dtype)
     return images, mask,fragment_mask
 
-def get_train_valid_dataset():
-    train_images = []
-    train_masks = []
-
-    valid_images = []
-    valid_masks = []
-    valid_xyxys = []
-    for fragment_id in ['20230702185753','20230929220926','20231005123336','20231007101619','20231012184423','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']:
-    # for fragment_id in ['20230820203112','20231005123333']:
-#,
-        
-    # for fragment_id in ['20230522181603','20230702185752','20230827161847','20230909121925','20230905134255','20230904135535']:
-        print('reading ',fragment_id)
-        image, mask,fragment_mask = read_image_mask(fragment_id)
-        x1_list = list(range(0, image.shape[1]-CFG.tile_size+1, CFG.stride))
-        y1_list = list(range(0, image.shape[0]-CFG.tile_size+1, CFG.stride))
-        windows_dict={}
+#from numba import vectorize
+#@vectorize
+#@jit(nopython=True)
+def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False):
+        xyxys = []
+        ids = []
+        x1_list = list(range(0, image.shape[1]-tile_size+1, stride))
+        y1_list = list(range(0, image.shape[0]-tile_size+1, stride))
+        #x1_list = list(range(0, image.size()[1]-tile_size+1, stride))
+        #y1_list = list(range(0, image.size()[0]-tile_size+1, stride))
+        #windows_dict={}
         for a in y1_list:
             for b in x1_list:
-                for yi in range(0,CFG.tile_size,CFG.size):
-                    for xi in range(0,CFG.tile_size,CFG.size):
+                for yi in range(0,tile_size,size):
+                    for xi in range(0,tile_size,size):
                         y1=a+yi
                         x1=b+xi
-                        y2=y1+CFG.size
-                        x2=x1+CFG.size
-                # for y2 in range(y1,y1 + CFG.tile_size,CFG.size):
-                #     for x2 in range(x1, x1 + CFG.tile_size,CFG.size):
-                        if fragment_id!=CFG.valid_id:
-                            if not np.all(mask[a:a + CFG.tile_size, b:b + CFG.tile_size]<0.01):
-                                if not np.any(fragment_mask[a:a+ CFG.tile_size, b:b + CFG.tile_size]==0):
+                        y2=y1+size
+                        x2=x1+size
+                # for y2 in range(y1,y1 + tile_size,size):
+                #     for x2 in range(x1, x1 + tile_size,size):
+                        if not is_valid:
+                            if not np.all(np.less(mask[a:a + tile_size, b:b + tile_size],0.01)):
+                                if not np.any(np.equal(fragment_mask[a:a+ tile_size, b:b + tile_size],0)):
                                     # if (y1,y2,x1,x2) not in windows_dict:
-                                    train_images.append(image[y1:y2, x1:x2])
-                                    
-                                    train_masks.append(mask[y1:y2, x1:x2, None])
-                                    assert image[y1:y2, x1:x2].shape==(CFG.size,CFG.size,CFG.in_chans)
+                                    #train_images.append(image[y1:y2, x1:x2])
+                                    xyxys.append([x1,y1,x2,y2])
+                                    ids.append(fragment_id)
+                                    #train_masks.append(mask[y1:y2, x1:x2, None])
+                                    #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
                                         # windows_dict[(y1,y2,x1,x2)]='1'
-                        if fragment_id==CFG.valid_id:
-                            if not np.any(fragment_mask[a:a + CFG.tile_size, b:b + CFG.tile_size]==0):
-                                    valid_images.append(image[y1:y2, x1:x2])
-                                    valid_masks.append(mask[y1:y2, x1:x2, None])
+                        else:
+                            if not np.any(np.equal(fragment_mask[a:a + tile_size, b:b + tile_size], 0)):
+                                    #valid_images.append(image[y1:y2, x1:x2])
+                                    #valid_masks.append(mask[y1:y2, x1:x2, None])
+                                    ids.append(fragment_id)
+                                    xyxys.append([x1, y1, x2, y2])
+                                    #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
+        return xyxys, ids
 
-                                    valid_xyxys.append([x1, y1, x2, y2])
-                                    assert image[y1:y2, x1:x2].shape==(CFG.size,CFG.size,CFG.in_chans)
 
-    return train_images, train_masks, valid_images, valid_masks, valid_xyxys
+def get_xyxys(fragment_ids, is_valid=False):
+    xyxys = []
+    ids = []
+    images = {}
+    masks = {}
+    for fragment_id in fragment_ids:
+        #start_idx = len(fragment_ids)
+        print('reading ',fragment_id)
+        image, mask,fragment_mask = read_image_mask(fragment_id)
+
+        images[fragment_id] = image
+        masks[fragment_id] = mask[:,:,None]
+        t = time.time()
+        if os.path.isfile(fragment_id + ".ids.json"):
+          with open(fragment_id + ".ids.json", 'r') as f:
+            id = json.load(f)
+        if os.path.isfile(fragment_id + ".xyxys.json"):
+          with open(fragment_id + ".xyxys.json", 'r') as f:
+            xyxy = json.load(f)
+        else:
+          xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, CFG.tile_size, CFG.size, CFG.stride, is_valid)
+          with open(fragment_id + ".ids.json", 'w') as f:
+            #if fragment_id != CFG.valid_id:
+              json.dump(id, f) #[start_idx:], f)
+            #else:
+            #  json.dump(valid_ids, f)
+          with open(fragment_id + ".xyxys.json", 'w') as f:
+            #if fragment_id != CFG.valid_id:
+            json.dump(xyxy, f) #[start_idx:],f)
+            #else:
+            #  json.dump(valid_xyxys, f)
+        xyxys = xyxys + xyxy
+        ids = ids + id
+
+        print(time.time()-t, "seconds taken to generate crops for fragment", fragment_id)
+    return images, masks, xyxys, ids
+
+#@jit(nopython=True)
+def get_train_valid_dataset():
+    train_images = {}
+    train_masks = {}
+    train_xyxys= []
+    train_ids = []
+    valid_images = {}
+    valid_masks = {}
+    valid_xyxys = []
+    valid_ids = []
+    train_ids = set(['20230702185753','20230929220926','20231005123336','20231007101619','20231012184423','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']) - set([CFG.valid_id])
+    valid_ids = set([CFG.valid_id])
+    train_images, train_masks, train_xyxys, train_ids = get_xyxys(train_ids, False)
+    valid_images, valid_masks, valid_xyxys, valid_ids = get_xyxys(valid_ids, True)
+    return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
 
 def get_transforms(data, cfg):
     if data == 'train':
@@ -308,24 +381,22 @@ def get_transforms(data, cfg):
     return aug
 
 class CustomDataset(Dataset):
-    def __init__(self, images ,cfg,xyxys=None, labels=None, transform=None):
+    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None):
         self.images = images
         self.cfg = cfg
         self.labels = labels
-        
         self.transform = transform
         self.xyxys=xyxys
+        self.ids = ids
         self.rotate=CFG.rotate
     def __len__(self):
-        return len(self.images)
+        return len(self.xyxys)
     def cubeTranslate(self,y):
         x=np.random.uniform(0,1,4).reshape(2,2)
         x[x<.4]=0
         x[x>.633]=2
         x[(x>.4)&(x<.633)]=1
         mask=cv2.resize(x, (x.shape[1]*64,x.shape[0]*64), interpolation = cv2.INTER_AREA)
-
-        
         x=np.zeros((self.cfg.size,self.cfg.size,self.cfg.in_chans)).astype(np.uint8)
         for i in range(3):
             x=np.where(np.repeat((mask==0).reshape(self.cfg.size,self.cfg.size,1), self.cfg.in_chans, axis=2),y[:,:,i:self.cfg.in_chans+i],x)
@@ -354,14 +425,15 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.xyxys is not None:
-            image = self.images[idx]
-            label = self.labels[idx]
-            xy=self.xyxys[idx]
+            id = self.ids[idx]
+            x1,y1,x2,y2=xy=self.xyxys[idx]
+            image = self.images[id][y1:y2,x1:x2] #,self.start:self.end] #[idx]
+            label = self.labels[id][y1:y2,x1:x2]
             if self.transform:
                 data = self.transform(image=image, mask=label)
                 image = data['image'].unsqueeze(0)
                 label = data['mask']
-                label=F.interpolate(label.unsqueeze(0),(self.cfg.size//4,self.cfg.size//4)).squeeze(0)
+                label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//4,self.cfg.size//4)).squeeze(0)
             return image, label,xy
         else:
             image = self.images[idx]
@@ -380,22 +452,24 @@ class CustomDataset(Dataset):
                 data = self.transform(image=image, mask=label)
                 image = data['image'].unsqueeze(0)
                 label = data['mask']
-                label=F.interpolate(label.unsqueeze(0),(self.cfg.size//4,self.cfg.size//4)).squeeze(0)
+                label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//4,self.cfg.size//4)).squeeze(0)
             return image, label
 class CustomDatasetTest(Dataset):
-    def __init__(self, images,xyxys, cfg, transform=None):
+    def __init__(self, images, xyxys, ids, cfg, transform=None):
         self.images = images
         self.xyxys=xyxys
+        self.ids = ids
         self.cfg = cfg
         self.transform = transform
 
     def __len__(self):
         # return len(self.df)
-        return len(self.images)
+        return len(self.xyxys)
 
     def __getitem__(self, idx):
-        image = self.images[idx]
-        xy=self.xyxys[idx]
+        x1,y1,x2,y2=xy=self.xyxys[idx]
+        id = self.ids[idx]
+        image = self.images[id][y1:y2,x1:x2]
         if self.transform:
             data = self.transform(image=image)
             image = data['image'].unsqueeze(0)
@@ -467,7 +541,7 @@ class RegressionPLModel(pl.LightningModule):
         return pred_mask
     
     def training_step(self, batch, batch_idx):
-        x, y = batch
+        x, y, xys = batch
         outputs = self(x)
         loss1 = self.loss_func(outputs, y)
         if torch.isnan(loss1):
@@ -557,13 +631,13 @@ for fid in fragments:
     valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.png", 0)
 
     pred_shape=valid_mask_gt.shape
-    train_images, train_masks, valid_images, valid_masks, valid_xyxys = get_train_valid_dataset()
+    train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset()
     print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
     train_dataset = CustomDataset(
-        train_images, CFG, labels=train_masks, transform=get_transforms(data='train', cfg=CFG))
+        train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG))
     valid_dataset = CustomDataset(
-        valid_images, CFG,xyxys=valid_xyxys, labels=valid_masks, transform=get_transforms(data='valid', cfg=CFG))
+        valid_images, CFG,xyxys=valid_xyxys, labels=valid_masks, ids=valid_ids, transform=get_transforms(data='valid', cfg=CFG))
 
     train_loader = DataLoader(train_dataset,
                                 batch_size=CFG.train_batch_size,
@@ -584,9 +658,13 @@ for fid in fragments:
     multiplicative = lambda epoch: 0.9
 
     trainer = pl.Trainer(
-        max_epochs=12,
+        max_epochs=24,
         accelerator="gpu",
+<<<<<<< HEAD
         devices=1,
+=======
+        devices=8,
+>>>>>>> pr/1
         logger=wandb_logger,
         default_root_dir="/content/gdrive/MyDrive/vesuvius_model/training/outputs",
         accumulate_grad_batches=1,
