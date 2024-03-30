@@ -60,18 +60,12 @@ class CFG:
     comp_name = 'vesuvius'
 
     # comp_dir_path = './'
-<<<<<<< HEAD
+
     comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model/training/'
     comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model/training/'
     # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
     comp_dataset_path = f'/content/gdrive/MyDrive/vesuvius_model/training/'
-=======
-    comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model/training'
-    comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model/training'
-    # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
-    comp_dataset_path = '/content/gdrive/MyDrive/vesuvius_model/training'
->>>>>>> pr/1
-    
+
     exp_name = 'pretraining_all'
 
     # ============== pred target =============
@@ -660,11 +654,7 @@ for fid in fragments:
     trainer = pl.Trainer(
         max_epochs=24,
         accelerator="gpu",
-<<<<<<< HEAD
         devices=1,
-=======
-        devices=8,
->>>>>>> pr/1
         logger=wandb_logger,
         default_root_dir="/content/gdrive/MyDrive/vesuvius_model/training/outputs",
         accumulate_grad_batches=1,
