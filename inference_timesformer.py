@@ -26,10 +26,10 @@ from tap import Tap
 import glob
 
 class InferenceArgumentParser(Tap):
-    segment_id: list[str] =['20230925002745']
-    segment_path:str='./eval_scrolls'
-    model_path:str= 'outputs/vesuvius/pretraining_all/vesuvius-models/valid_20230827161847_0_fr_i3depoch=7.ckpt'
-    out_path:str=""
+    segment_id: list[str] =['20231005123336']
+    segment_path:str='/content/gdrive/MyDrive/vesuvius_model/volume/segments'
+    model_path:str='/content/gdrive/MyDrive/vesuvius_model/checkpoints/timesformer_wild15_20230702185753_0_fr_i3depoch=12.ckpt'
+    out_path:str='/content/gdrive/MyDrive/vesuvius_model/inference_output'
     stride: int = 2
     start_idx:int=15
     workers: int = 4
@@ -51,9 +51,9 @@ class CFG:
     comp_name = 'vesuvius'
 
     # comp_dir_path = './'
-    comp_dir_path = './'
-    comp_folder_name = './'
-    comp_dataset_path = f'./'
+    comp_dir_path = '/content/gdrive/MyDrive/vesuvius_model'
+    comp_folder_name = '/content/gdrive/MyDrive/vesuvius_model'
+    comp_dataset_path = f'/content/gdrive/MyDrive/vesuvius_model/volume/segments'
     
     exp_name = 'pretraining_all'
     # ============== model cfg =============
