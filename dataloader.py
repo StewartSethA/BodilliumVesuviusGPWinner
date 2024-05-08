@@ -1,8 +1,5 @@
-import sys
-print("Importing...")
 import os.path as osp
 import os
-os.environ["WANDB_MODE"] = "offline"
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +19,6 @@ import pandas as pd
 import wandb
 
 from torch.utils.data import DataLoader
-print("1")
 
 import pandas as pd
 import os
@@ -41,188 +37,23 @@ import argparse
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-print("2")
+
 import datetime
 import segmentation_models_pytorch as smp
-print("3")
 import numpy as np
-print("4")
 from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import DataLoader, Dataset
 from i3dallnl import InceptionI3d
-print("5")
 import torch.nn as nn
-print("6")
 import torch
-print("7")
 from warmup_scheduler import GradualWarmupScheduler
-print("8")
 from scipy import ndimage
-print("9")
 import time
-print("10")
 import json
-print("11")
-#import numba
-print("12")
-#from numba import jit
-
-print("Done importing")
-
-
-print(sys.executable)
-class CFG:
-    # ============== comp exp name =============
-    comp_name = 'vesuvius'
-
-    # comp_dir_path = './'
-
-    comp_dir_path = './' #'/content/gdrive/MyDrive/vesuvius_model/training/'
-    comp_folder_name = './' #'/content/gdrive/MyDrive/vesuvius_model/training/'
-    # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
-    comp_dataset_path = './' #f'/content/gdrive/MyDrive/vesuvius_model/training/'
-
-    exp_name = 'pretraining_all'
-
-    # ============== pred target =============
-    target_size = 1
-
-    # ============== model cfg =============
-    model_name = 'Unet'
-    # backbone = 'efficientnet-b0'
-    # backbone = 'se_resnext50_32x4d'
-    backbone='resnet3d'
-    in_chans = 30 # 65
-    encoder_depth=5
-    # ============== training cfg =============
-    size = 64
-    tile_size = 256
-    stride = tile_size // 8
-
-    train_batch_size = 256 # 32
-    valid_batch_size = train_batch_size
-    use_amp = True
-
-    scheduler = 'GradualWarmupSchedulerV2'
-    # scheduler = 'CosineAnnealingLR'
-    epochs = 30 # 30
-
-    # adamW warmupあり
-    warmup_factor = 10
-    # lr = 1e-4 / warmup_factor
-    # lr = 1e-4 / warmup_factor
-    lr = 2e-5
-    # ============== fold =============
-    valid_id = '20230820203112'
-
-    # objective_cv = 'binary'  # 'binary', 'multiclass', 'regression'
-    metric_direction = 'maximize'  # maximize, 'minimize'
-    # metrics = 'dice_coef'
-
-    # ============== fixed =============
-    pretrained = True
-    inf_weight = 'best'  # 'best'
-
-    min_lr = 1e-6
-    weight_decay = 1e-6
-    max_grad_norm = 100
-
-    print_freq = 50
-    num_workers = 10
-
-    seed = 0
-
-    # ============== set dataset path =============
-    print('set dataset path')
-
-    outputs_path = './' #f'/content/gdrive/MyDrive/vesuvius_model/training/outputs'
-
-    submission_dir = outputs_path + 'submissions/'
-    submission_path = submission_dir + f'submission_{exp_name}.csv'
-
-    model_dir = outputs_path + \
-        f'{comp_name}-models/'
-
-    figures_dir = outputs_path + 'figures/'
-
-    log_dir = outputs_path + 'logs/'
-    log_path = log_dir + f'{exp_name}.txt'
-
-    # ============== augmentation =============
-    train_aug_list = [
-        # A.RandomResizedCrop(
-        #     size, size, scale=(0.85, 1.0)),
-        A.Resize(size, size),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        # A.RandomRotate90(p=0.6),
-
-        A.RandomBrightnessContrast(p=0.75),
-        A.ShiftScaleRotate(rotate_limit=360,shift_limit=0.15,scale_limit=0.1,p=0.75),
-        A.OneOf([
-                A.GaussNoise(var_limit=[10, 50]),
-                A.GaussianBlur(),
-                A.MotionBlur(),
-                ], p=0.4),
-        # A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-        A.CoarseDropout(max_holes=2, max_width=int(size * 0.2), max_height=int(size * 0.2), 
-                        mask_fill_value=0, p=0.5),
-        # A.Cutout(max_h_size=int(size * 0.6),
-        #          max_w_size=int(size * 0.6), num_holes=1, p=1.0),
-        A.Normalize(
-            mean= [0] * in_chans,
-            std= [1] * in_chans
-        ),
-        ToTensorV2(transpose_mask=True),
-    ]
-
-    valid_aug_list = [
-        A.Resize(size, size),
-        A.Normalize(
-            mean= [0] * in_chans,
-            std= [1] * in_chans
-        ),
-        ToTensorV2(transpose_mask=True),
-    ]
-    rotate = A.Compose([A.Rotate(8,p=1)])
-def init_logger(log_file):
-    from logging import getLogger, INFO, FileHandler, Formatter, StreamHandler
-    logger = getLogger(__name__)
-    logger.setLevel(INFO)
-    handler1 = StreamHandler()
-    handler1.setFormatter(Formatter("%(message)s"))
-    handler2 = FileHandler(filename=log_file)
-    handler2.setFormatter(Formatter("%(message)s"))
-    logger.addHandler(handler1)
-    logger.addHandler(handler2)
-    return logger
-
-def set_seed(seed=None, cudnn_deterministic=True):
-    if seed is None:
-        seed = 42
-
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = cudnn_deterministic
-    torch.backends.cudnn.benchmark = False
-def make_dirs(cfg):
-    for dir in [cfg.model_dir, cfg.figures_dir, cfg.submission_dir, cfg.log_dir]:
-        os.makedirs(dir, exist_ok=True)
-def cfg_init(cfg, mode='train'):
-    set_seed(cfg.seed)
-    # set_env_name()
-    # set_dataset_path(cfg)
-
-    if mode == 'train':
-        make_dirs(cfg)
-cfg_init(CFG)
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+import numba
+from numba import jit
 
 def read_image_mask(fragment_id,start_idx=15,end_idx=45):
 
@@ -378,7 +209,7 @@ def get_train_valid_dataset():
     valid_masks = {}
     valid_xyxys = []
     valid_ids = []
-    train_ids = set(['20230702185753','20230929220926','20231005123336']) #,'20231007101619','20231012184423','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']) - set([CFG.valid_id])
+    train_ids = set(['20230702185753','20230929220926','20231005123336','20231007101619','20231012184423','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']) - set([CFG.valid_id])
     valid_ids = set([CFG.valid_id])
     train_images, train_masks, train_xyxys, train_ids = get_xyxys(train_ids, False)
     valid_images, valid_masks, valid_xyxys, valid_ids = get_xyxys(valid_ids, True)
@@ -672,9 +503,9 @@ for fid in fragments:
     trainer = pl.Trainer(
         max_epochs=24,
         accelerator="gpu",
-        devices=torch.cuda.device_count(),
+        devices=1,
         logger=wandb_logger,
-        default_root_dir='./', #"/content/gdrive/MyDrive/vesuvius_model/training/outputs",
+        default_root_dir="/content/gdrive/MyDrive/vesuvius_model/training/outputs",
         accumulate_grad_batches=1,
         precision='16-mixed',
         gradient_clip_val=1.0,
