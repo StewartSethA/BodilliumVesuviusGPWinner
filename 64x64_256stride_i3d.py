@@ -71,6 +71,7 @@ print("12")
 
 print("Done importing")
 
+from skimage.measure import block_reduce
 
 print(sys.executable)
 class CFG:
@@ -83,7 +84,7 @@ class CFG:
     comp_folder_name = './' #'/content/gdrive/MyDrive/vesuvius_model/training/'
     # comp_dataset_path = f'{comp_dir_path}datasets/{comp_folder_name}/'
     comp_dataset_path = './' #f'/content/gdrive/MyDrive/vesuvius_model/training/'
-
+    basepath = "train_scrolls" #comp_dir_path
     exp_name = 'pretraining_all'
 
     # ============== pred target =============
@@ -97,6 +98,7 @@ class CFG:
     in_chans = 30 # 65
     encoder_depth=5
     # ============== training cfg =============
+    scale = 1
     size = 64
     tile_size = 256
     stride = tile_size // 8
@@ -236,7 +238,14 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
 
 
     t = time.time()
-    if os.path.isfile(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy"):
+    rescaled = False
+    if CFG.scale != 1 and os.path.isfile(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}_{start_idx}-{end_idx}_{CFG.scale}.npy"):
+      images = np.load(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}_{start_idx}-{end_idx}_{CFG.scale}.npy")
+      pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
+      pad1 = (CFG.tile_size - images.shape[1] % CFG.tile_size)
+      print(time.time()-t, "seconds taken to load images from", CFG.comp_dataset_path + f"train_scrolls/{fragment_id}_{start_idx}-{end_idx}_{CFG.scale}.npy")
+      rescaled = True
+    elif os.path.isfile(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy"):
       images = np.load(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy")
       pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
       pad1 = (CFG.tile_size - images.shape[1] % CFG.tile_size)
@@ -266,28 +275,68 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
       t = time.time()
       np.save(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy", images)
       print(time.time()-t, "seconds taken to save images as npy.")
-    if fragment_id in ['20230701020044','verso','20230901184804','20230901234823','20230531193658','20231007101615','20231005123333','20231011144857','20230522215721', '20230919113918', '20230625171244','20231022170900','20231012173610','20231016151000']:
 
-        images=images[:,:,::-1]
-
+    scale = CFG.scale
+    basepath = CFG.basepath
     if fragment_id=='20231022170900':
-        mask = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.tiff", 0)
+        mask = cv2.imread(f"{basepath}/{fragment_id}/{fragment_id}_inklabels.tiff", 0)
     else:
-        mask = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.png", 0)
+        mask = cv2.imread(f"{basepath}/{fragment_id}/{fragment_id}_inklabels.png", 0)
+    if mask is None:
+      print("Warning: No GT found for", fragment_id)
+      mask = np.zeros_like(images[:,:,0])
+
+    if scale != 1 and not rescaled:
+      print("Rescaling image...", fragment_id, images.shape, "down by", scale)
+      t = time.time()
+      images = (block_reduce(images, block_size=(scale,scale,1), func=np.mean, cval=np.mean(images))+0.5).astype(np.uint8)
+      print("Rescaling took", time.time()-t, "seconds.", images.shape)
+      np.save(f"train_scrolls/{fragment_id}_{start_idx}-{end_idx}_{scale}.npy", images) # Other parts too
+      print("Saved rescaled array.")
+      pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
+      pad1 = (CFG.tile_size - images.shape[1] % CFG.tile_size)
+    if isinstance(images, np.ndarray):
+      images = np.pad(images, [(0,pad0), (0, pad1), (0, 0)], constant_values=0)
+
+    if 'frag' in fragment_id:
+      mask = cv2.resize(mask , (mask.shape[1]//2,mask.shape[0]//2), interpolation = cv2.INTER_AREA)
+
+    #if scale != 1 or (images is not None and mask.shape[:2] != images.shape[:2]):
+    #  print("resizing ink labels", mask.shape, scale, images.shape)
+    #  #mask = cv2.resize(mask , (mask.shape[1]//scale,mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
+    if mask is not None and images is not None and scale != 1: #images.shape[:2] != mask.shape:
+      print("resizing ink labels", mask.shape, scale, images.shape)
+      mask = cv2.resize(mask , (mask.shape[1]//scale,mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
 
     # mask = np.pad(mask, [(0, pad0), (0, pad1)], constant_values=0)
-    fragment_mask=cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_mask.png", 0)
+    print("Reading fragment mask", f"{basepath}/{fragment_id}/{fragment_id}_mask.png")
+    fragment_mask=cv2.imread(f"{basepath}/{fragment_id}/{fragment_id}_mask.png", 0)
     if fragment_id=='20230827161846':
-        fragment_mask=cv2.flip(fragment_mask,0)
-
-    fragment_mask = np.pad(fragment_mask, [(0, pad0), (0, pad1)], constant_values=0)
-
-    kernel = np.ones((16,16),np.uint8)
+      fragment_mask=cv2.flip(fragment_mask,0)
+    fragment_mask_only=False
+    if fragment_mask is not None and images is not None and mask is not None and (not fragment_mask_only):
+      print("Padding masks")
+      p0 = max(0,images.shape[0]-fragment_mask.shape[0])
+      p1 = max(0,images.shape[1]-fragment_mask.shape[1])
+      fragment_mask = np.pad(fragment_mask, [(0, p0), (0, p1)], constant_values=0)
+      p0 = max(0,images.shape[0]-mask.shape[0])
+      p1 = max(0,images.shape[1]-mask.shape[1])
+      mask = np.pad(mask, [(0, p0), (0, p1)], constant_values=0)
+      mask = cv2.blur(mask, (3,3))
+    elif not fragment_mask_only:
+      return (None,)*3
     if 'frag' in fragment_id:
         fragment_mask = cv2.resize(fragment_mask, (fragment_mask.shape[1]//2,fragment_mask.shape[0]//2), interpolation = cv2.INTER_AREA)
-        mask = cv2.resize(mask , (mask.shape[1]//2,mask.shape[0]//2), interpolation = cv2.INTER_AREA)
+    #if scale != 1 and images is None: # Whoa there pardner! Scaling down the masks too I see!
+    #  print("Resizing fragment mask since images are None!", fragment_mask.shape)
+    #  fragment_mask = cv2.resize(fragment_mask , (fragment_mask.shape[1]//scale,fragment_mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
+    if scale != 1: #fragment_mask.shape[:2] != images.shape[:2]:
+      print("Resizing fragment mask to equal images shape", fragment_mask.shape, images.shape)
+      fragment_mask = cv2.resize(fragment_mask, (fragment_mask.shape[1]//scale,fragment_mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
 
-    print("images.shape,dtype", images.shape, images.dtype, "mask", mask.shape, mask.dtype, "fragment_mask", fragment_mask.shape, fragment_mask.dtype)
+    if mask is not None and images is not None and fragment_mask is not None:
+      print("PYGO images.shape,dtype", images.shape, (images.dtype if isinstance(images, np.ndarray) else None), "mask", mask.shape, mask.dtype, "fragment_mask", fragment_mask.shape, fragment_mask.dtype)
+
     return images, mask,fragment_mask
 
 #from numba import vectorize
@@ -319,7 +368,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
                                     xyxys.append([x1,y1,x2,y2])
                                     ids.append(fragment_id)
                                     #train_masks.append(mask[y1:y2, x1:x2, None])
-                                    #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
+                                    assert image[y1:y2, x1:x2].shape==(size,size,CFG.in_chans)
                                         # windows_dict[(y1,y2,x1,x2)]='1'
                         else:
                             if not np.any(np.equal(fragment_mask[a:a + tile_size, b:b + tile_size], 0)):
@@ -327,7 +376,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
                                     #valid_masks.append(mask[y1:y2, x1:x2, None])
                                     ids.append(fragment_id)
                                     xyxys.append([x1, y1, x2, y2])
-                                    #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
+                                    assert image[y1:y2, x1:x2].shape==(size,size,CFG.in_chans)
         return xyxys, ids
 
 
@@ -344,10 +393,10 @@ def get_xyxys(fragment_ids, is_valid=False):
         images[fragment_id] = image
         masks[fragment_id] = mask[:,:,None]
         t = time.time()
-        if os.path.isfile(fragment_id + ".ids.json"):
+        if False and os.path.isfile(fragment_id + ".ids.json"):
           with open(fragment_id + ".ids.json", 'r') as f:
             id = json.load(f)
-        if os.path.isfile(fragment_id + ".xyxys.json"):
+        if False and os.path.isfile(fragment_id + ".xyxys.json"):
           with open(fragment_id + ".xyxys.json", 'r') as f:
             xyxy = json.load(f)
         else:
@@ -441,6 +490,15 @@ class CustomDataset(Dataset):
             x1,y1,x2,y2=xy=self.xyxys[idx]
             image = self.images[id][y1:y2,x1:x2] #,self.start:self.end] #[idx]
             label = self.labels[id][y1:y2,x1:x2]
+            if np.product(image.shape) == 0:
+                print("Invalid xy", self.xyxys[idx], self.images[id].shape)
+                h,w=y2-y1,x2-x1
+                x1,y1 = random.randint(0,self.images[id].shape[1]-w), random.randint(0,self.images[id].shape[0]-h)
+                image = self.images[id][y1:y2,x1:x2] #,self.start:self.end] #[idx]
+                label = self.labels[id][y1:y2,x1:x2] #,self.start:self.end] #[idx]
+                #del self[idx]
+                #return self[idx]
+                #return self[(idx+1))%len(self)]
             if self.transform:
                 data = self.transform(image=image, mask=label)
                 image = data['image'].unsqueeze(0)
@@ -482,6 +540,9 @@ class CustomDatasetTest(Dataset):
         x1,y1,x2,y2=xy=self.xyxys[idx]
         id = self.ids[idx]
         image = self.images[id][y1:y2,x1:x2]
+        if np.product(image.shape) == 0:
+          print("Erroneous bounds", xy, id, self.images[id].shape)
+          return None,None
         if self.transform:
             data = self.transform(image=image)
             image = data['image'].unsqueeze(0)
@@ -555,6 +616,9 @@ class RegressionPLModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y, xys = batch
         outputs = self(x)
+        print("outputs.shape", outputs.shape, "y.shape", y.shape)
+        if outputs.shape != y.shape:
+          outputs = F.interpolate(outputs, y.shape[-2:], mode="bilinear")
         loss1 = self.loss_func(outputs, y)
         if torch.isnan(loss1):
             print("Loss nan encountered")
@@ -568,8 +632,15 @@ class RegressionPLModel(pl.LightningModule):
         loss1 = self.loss_func(outputs, y)
         y_preds = torch.sigmoid(outputs).to('cpu')
         for i, (x1, y1, x2, y2) in enumerate(xyxys):
-            self.mask_pred[y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),scale_factor=4,mode='bilinear').squeeze(0).squeeze(0).numpy()
-            self.mask_count[y1:y2, x1:x2] += np.ones((self.hparams.size, self.hparams.size))
+            #self.mask_pred[y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),scale_factor=4,mode='bilinear').squeeze(0).squeeze(0).numpy()
+            #ValueError: operands could not be broadcast together with shapes (64,32) (64,64) (64,32) # 2024-05-08
+            y2,x2= min(y2, self.mask_pred.shape[0]), min(x2, self.mask_pred.shape[1])
+            if x2 <= x1 or y2 <= y1 or x1 >= self.mask_pred.shape[1] or y1 >= self.mask_pred.shape[0]:
+              # How did this happen? tensor([1440,  160, 1504,  224], device='cuda:3') (3712, 1408)
+              print("How did this happen?", xyxys[i], self.mask_pred.shape)
+              continue
+            self.mask_pred[y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy()
+            self.mask_count[y1:y2, x1:x2] += np.ones((y2-y1,x2-x1)) #(self.hparams.size, self.hparams.size))
 
         self.log("val/total_loss", loss1.item(),on_step=True, on_epoch=True, prog_bar=True)
         return {"loss": loss1}
@@ -625,12 +696,38 @@ def scheduler_step(scheduler, avg_val_loss, epoch):
    
 
 
+from argparse import ArgumentParser
+#from config import CFG
 
-fragment_id = CFG.valid_id
+parser = ArgumentParser()
+parser.add_argument('--scale', type=int, default=1, required=False)
+parser.add_argument('--tile_size', type=int, default=256, required=False)
+parser.add_argument('--size', type=int, default=64, required=False)
+parser.add_argument('--stride', type=int, default=32, required=False)
+parser.add_argument('--model', type=str, default="pygoflat", required=False)
+parser.add_argument('--load', type=str, default="", required=False)
+parser.add_argument('--complexity', type=int, default=16, required=False)
+parser.add_argument('--epochs', type=int, default=12, required=False)
+parser.add_argument('--batch_size', type=int, default=256, required=False)
+parser.add_argument('--val_batch_size', type=int, default=256, required=False)
+parser.add_argument('--minbatches', type=int, default=1000000, required=False)
+args = parser.parse_args()
 
-valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.png", 0)
+CFG.scale = args.scale
+CFG.tile_size = args.tile_size
+CFG.size = args.size
+CFG.stride = args.stride
+CFG.train_batch_size = args.batch_size
+
+#from dataloaders import *
+
+
+
+#fragment_id = CFG.valid_id
+
+#valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.png", 0)
 # valid_mask_gt=cv2.resize(valid_mask_gt,(valid_mask_gt.shape[1]//2,valid_mask_gt.shape[0]//2),cv2.INTER_AREA)
-pred_shape=valid_mask_gt.shape
+#pred_shape=valid_mask_gt.shape
 torch.set_float32_matmul_precision('medium')
 
 fragments=['20230820203112']
@@ -638,11 +735,11 @@ enc_i,enc,fold=0,'i3d',0
 for fid in fragments:
     CFG.valid_id=fid
     fragment_id = CFG.valid_id
-    run_slug=f'training_scrolls_valid={fragment_id}_{CFG.size}x{CFG.size}_submissionlabels_wild11'
+    run_slug=f'training_scrolls_valid={fragment_id}_{CFG.size}x{CFG.size}_submissionlabels_wild11_scale{CFG.scale}'
 
     valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{fragment_id}/{fragment_id}_inklabels.png", 0)
 
-    pred_shape=valid_mask_gt.shape
+    pred_shape=tuple(t//CFG.scale for t in valid_mask_gt.shape)
     train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset()
     print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
@@ -663,7 +760,10 @@ for fid in fragments:
 
     wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
     norm=fold==1
-    model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size)
+    if len(args.load) == 0:
+      model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size)
+    else:
+      model=RegressionPLModel.load_from_checkpoint(args.load, enc='i3d',pred_shape=pred_shape,size=CFG.size, name=run_slug)
 
     print('FOLD : ',fold)
     wandb_logger.watch(model, log="all", log_freq=100)
@@ -680,7 +780,7 @@ for fid in fragments:
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
         strategy='ddp_find_unused_parameters_true',
-        callbacks=[ModelCheckpoint(filename=f'wild12_64_{fid}_{fold}_fr_{enc}'+'{epoch}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=CFG.epochs),
+        callbacks=[ModelCheckpoint(filename=f'wild12_64_{fid}_{fold}_fr_{enc}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=CFG.epochs),
 
                     ],
 

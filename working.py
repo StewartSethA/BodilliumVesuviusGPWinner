@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=4,5,6,7 python 64x64_256stride_i3d.py --load wild12_64_20230820203112_0_fr_i3depoch\=20.ckpt --scale 1 --size 64 --tile_size 256 --stride 32 --batch_size 64 --val_batch_size 256 --epochs 96
