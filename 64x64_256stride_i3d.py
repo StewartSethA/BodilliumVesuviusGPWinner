@@ -226,7 +226,22 @@ cfg_init(CFG)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 writer = None
-def read_image_mask(fragment_id,start_idx=15,end_idx=45):
+def read_image_mask(fragment_id,start_idx=15,end_idx=45,fragment_mask_only=False,pad0=0, pad1=0):
+    scale = CFG.scale
+    if fragment_mask_only:
+      print("Reading fragment mask", f"train_scrolls/{fragment_id}/{fragment_id}_mask.png")
+      fragment_mask=cv2.imread(f"train_scrolls/{fragment_id}/{fragment_id}_mask.png", 0)
+      if fragment_id=='20230827161846':
+        fragment_mask=cv2.flip(fragment_mask,0)
+      if 'frag' in fragment_id:
+        fragment_mask = cv2.resize(fragment_mask, (fragment_mask.shape[1]//2,fragment_mask.shape[0]//2), interpolation = cv2.INTER_AREA)
+      #if scale != 1 and images is None: # Whoa there pardner! Scaling down the masks too I see!
+      #  print("Resizing fragment mask since images are None!", fragment_mask.shape)
+      #  fragment_mask = cv2.resize(fragment_mask , (fragment_mask.shape[1]//scale,fragment_mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
+      if scale != 1: #fragment_mask.shape[:2] != images.shape[:2]:
+        print("Resizing fragment mask to equal images shape", fragment_mask.shape, images.shape)
+        fragment_mask = cv2.resize(fragment_mask, (fragment_mask.shape[1]//scale,fragment_mask.shape[0]//scale), interpolation = cv2.INTER_AREA)
+        return None, None, fragment_mask
 
     images = []
 
@@ -239,10 +254,10 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
 
     t = time.time()
     rescaled = False
-    scale = CFG.scale
     scalerangenpy = f"train_scrolls/{fragment_id}_{start_idx}-{end_idx}_{scale}.npy"
     normalnpy = f"train_scrolls/{fragment_id}/layers/{fragment_id}.npy"
     rootnpy = f"train_scrolls/{fragment_id}.npy"
+    print("Checking for", scalerangenpy, scale)
     if scale != 1 and os.path.isfile(scalerangenpy):
       images = np.load(scalerangenpy)
       pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
@@ -250,6 +265,7 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
       print(time.time()-t, "seconds taken to load images from", scalerangenpy)
       rescaled = True
     else:
+      print("Checking for", rootnpy, normalnpy, scale)
       for path in rootnpy, normalnpy:
         if os.path.isfile(path):
           images = np.load(path)
@@ -348,7 +364,47 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45):
 #from numba import vectorize
 #@vectorize
 #@jit(nopython=True)
-def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False):
+def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False, scale=1):
+        print("    Generating xyxys", fragment_id, image.shape, mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid)
+        noink = os.path.join(CFG.basepath, fragment_id + "_noink.png")
+        if os.path.isfile(noink):
+          print("Reading NO INK file:", noink)
+          noink = cv2.imread(noink, 0)
+        else:
+          noink = None
+        if noink is not None and scale != 1: #mask.shape[:2] != noink.shape:
+          print("MAJOR WARNING: NO INK MASK AND INK MASK SIZES DO NOT MATCH!", noink.shape, mask.shape, noink.shape[0]/mask.shape[0], noink.shape[1]/mask.shape[1])
+          #noink = cv2.resize(noink, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_AREA)
+          noink = cv2.resize(noink, (0,0), fx=1/scale, fy=1/scale, interpolation=cv2.INTER_AREA)
+        if noink is None:
+          noink = mask
+        else:
+          noink = mask + noink[:,:,np.newaxis]
+        # TODO Use multiplication of masks and np.argwhere to produce suggested coordinates.
+        xyxys = []
+        ids = []
+        #if fragment_id in ['20231007101619']: # SethS 4/17/2024 for suppressing false positive ink labels, include more true negative labels.
+        #  is_valid = True
+        #if is_valid:
+        #  stride = stride * 2
+        # TODO SethS:
+        if is_valid: #Whoops! Was mask, not fragment_mask!
+          xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(fragment_mask[:,:] >= -9999).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < fragment_mask.shape[0] and c[1]+tile_size < fragment_mask.shape[1]] #[::int(stride)]
+          ids = [fragment_id] * len(xyxys)
+          return xyxys, ids
+        if not is_valid: # Added 4/29 SethS
+          #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(mask[:,:,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < mask.shape[0] and c[1]+tile_size < mask.shape[1]] #[::int(stride)
+          t = time.time()
+          xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(noink[:,:,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < mask.shape[0] and c[1]+tile_size < mask.shape[1]] #[::int(stride)]
+          print("xyxys for training generated in", time.time()-t, "seconds", fragment_id, len(xyxys), noink.shape)
+          ids = [fragment_id] * len(xyxys)
+          return xyxys, ids
+
+
+
+
+
+
         xyxys = []
         ids = []
         x1_list = list(range(0, image.shape[1]-tile_size+1, stride))
@@ -387,6 +443,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
 
 
 def get_xyxys(fragment_ids, is_valid=False):
+#def get_xyxys(valid_ids, CFG, True, start_idx=start_idx, end_idx=end_idx, train_images=train_images, train_masks=train_masks, train_ids=train_ids, pads=pads, scale=1):
     xyxys = []
     ids = []
     images = {}
@@ -399,14 +456,15 @@ def get_xyxys(fragment_ids, is_valid=False):
         images[fragment_id] = image
         masks[fragment_id] = mask[:,:,None]
         t = time.time()
-        if os.path.isfile(fragment_id + ".ids.json"):
-          with open(fragment_id + ".ids.json", 'r') as f:
-            id = json.load(f)
-        if os.path.isfile(fragment_id + ".xyxys.json"):
-          with open(fragment_id + ".xyxys.json", 'r') as f:
-            xyxy = json.load(f)
-        else:
-          xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, CFG.tile_size, CFG.size, CFG.stride, is_valid)
+        #if os.path.isfile(fragment_id + ".ids.json"):
+        #  with open(fragment_id + ".ids.json", 'r') as f:
+        #    id = json.load(f)
+        #if os.path.isfile(fragment_id + ".xyxys.json"):
+        #  with open(fragment_id + ".xyxys.json", 'r') as f:
+        #    xyxy = json.load(f)
+        #else:
+        if True:
+          xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, CFG.tile_size, CFG.size, CFG.stride, is_valid, scale=CFG.scale)
           with open(fragment_id + ".ids.json", 'w') as f:
             #if fragment_id != CFG.valid_id:
               json.dump(id, f) #[start_idx:], f)
@@ -423,6 +481,80 @@ def get_xyxys(fragment_ids, is_valid=False):
         print(time.time()-t, "seconds taken to generate crops for fragment", fragment_id)
     return images, masks, xyxys, ids
 
+def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train_images={}, train_masks={}, train_ids=[], pads={}, scale=1):
+    xyxys = []
+    ids = []
+    images = {}
+    masks = {}
+
+    for fragment_id in fragment_ids:
+        myscale = scale
+        if fragment_id in ['20231215151901', '20231111135340', '20231122192640']:
+          myscale = scale * 2 # 2040 was extracted at 7.91 um, same as Scroll1
+        start_idx = len(fragment_ids)
+        print('reading', fragment_id)
+        if fragment_id in train_images.keys():
+          image, mask = train_images[fragment_id], train_masks[fragment_id]
+          pad0, pad1 = pads.get(fragment_id)
+          #_, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=is_valid)
+          #_, _, fragment_mask, pad0, pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1) #, scale=myscale, force_mem=is_valid)
+          _, _, fragment_mask = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1) #, scale=myscale, force_mem=is_valid)
+        else:
+          #image, mask,fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, scale=myscale, force_mem=is_valid)
+          #image, mask,fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx) #, cfg, scale=myscale, force_mem=is_valid)
+          image, mask,fragment_mask = read_image_mask(fragment_id, start_idx, end_idx) #, cfg, scale=myscale, force_mem=is_valid)
+          pad0, pad1 = 0, 0
+        if image is None:
+          print("Failed to load", fragment_id)
+          continue
+        print("Loading ink labels")
+        pads[fragment_id] = (pad0, pad1)
+
+        images[fragment_id] = image
+        if image is None:
+          masks[fragment_id] = None
+          continue
+          #return None, None, None, None
+        if mask is None:
+          print("Defaulting to empty mask! I hope this is just for inference!", fragment_id)
+          mask = np.zeros_like(image[:,:,0])
+
+        masks[fragment_id] = mask = mask[:,:,np.newaxis] if len(mask.shape) == 2 else mask
+        t = time.time()
+        validlabel="valid" if is_valid else "train"
+        savename = os.path.join(cfg.basepath, fragment_id + validlabel+str(cfg.tile_size)+"_"+str(cfg.size)+"_"+str(cfg.stride)+("_s"+str(myscale) if myscale != 1 else ""))
+        print("Loading IDs, xyxys", savename)
+        if os.path.isfile(savename+".ids.json") and False:
+          with open(savename + ".ids.json", 'r') as f:
+            id = json.load(f)
+        if os.path.isfile(savename + ".xyxys.json") and False:
+          with open(savename + ".xyxys.json", 'r') as f:
+            xyxy = json.load(f)
+            print(savename, "xyxys len:", len(xyxy), image.shape)
+        else:
+          print("Generating new xyxys for", fragment_id, image.shape, "mask", mask.shape)
+          if not is_valid:
+            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=CFG.scale) #, CFG=cfg)
+          else:
+            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=CFG.scale) #, CFG=cfg)
+          print("saving xyxys and ids", len(xyxy), len(id), "to", savename)
+          with open(savename + ".ids.json", 'w') as f:
+            #if fragment_id != cfg.valid_id:
+              json.dump(id, f) #[start_idx:], f)
+            #else:
+            #  json.dump(valid_ids, f)
+          with open(savename +".xyxys.json", 'w') as f:
+            #if fragment_id != cfg.valid_id:
+            json.dump(xyxy, f) #[start_idx:],f)
+            #else:
+            #  json.dump(valid_xyxys, f)
+        #print("xyxys", xyxys, xyxy, xyxy[-1], len(xyxys), len(xyxy))
+        xyxys = xyxys + xyxy
+        ids = ids + id
+
+        print(time.time()-t, "seconds taken to generate crops for fragment", fragment_id)
+    return images, masks, xyxys, ids, pads
+
 #@jit(nopython=True)
 def get_train_valid_dataset():
     train_images = {}
@@ -437,6 +569,17 @@ def get_train_valid_dataset():
     valid_ids = set([CFG.valid_id])
     train_images, train_masks, train_xyxys, train_ids = get_xyxys(train_ids, False)
     valid_images, valid_masks, valid_xyxys, valid_ids = get_xyxys(valid_ids, True)
+    return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
+
+def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_idx=45, scale=1):
+    start_idx = 0
+    if len(train_ids) == 0:
+      train_ids = set(["20231210132040", '20230929220926','20231005123336']) #,'20231007101619','20231016151002']) # - set([CFG.valid_id])
+    if len(valid_ids) == 0:
+      CFG.valid_id = "20231210132040" #"20231215151901" #20240304141530"
+      valid_ids = set([CFG.valid_id]) #+list(train_ids))
+    train_images, train_masks, train_xyxys, train_ids, pads = get_xyxys(train_ids, CFG, False, start_idx=start_idx, end_idx=end_idx, scale=scale)
+    valid_images, valid_masks, valid_xyxys, valid_ids, _ = get_xyxys(valid_ids, CFG, True, start_idx=start_idx, end_idx=end_idx, train_images=train_images, train_masks=train_masks, train_ids=train_ids, pads=pads, scale=scale)
     return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
 
 def get_transforms(data, cfg):
@@ -511,7 +654,7 @@ class CustomDataset(Dataset):
                 label = data['mask']
                 #label=F.interpolate((label/255).unsqueeze(0).float(),(max(1,self.cfg.size//4),max(self.cfg.size//4,1))).squeeze(0)
                 label=(label/255).float()
-            return image, label,xy
+            return image, label,xy,id
         else:
             image = self.images[idx]
             label = self.labels[idx]
@@ -533,8 +676,9 @@ class CustomDataset(Dataset):
                 #label=F.interpolate((label/255).unsqueeze(0).float(),(max(1,self.cfg.size//4),max(1,self.cfg.size//4))).squeeze(0)
             return image, label
 class CustomDatasetTest(Dataset):
-    def __init__(self, images, xyxys, ids, cfg, transform=None):
+    def __init__(self, images, labels, xyxys, ids, cfg, transform=None):
         self.images = images
+        self.labels = labels
         self.xyxys=xyxys
         self.ids = ids
         self.cfg = cfg
@@ -548,6 +692,7 @@ class CustomDatasetTest(Dataset):
         x1,y1,x2,y2=xy=self.xyxys[idx]
         id = self.ids[idx]
         image = self.images[id][y1:y2,x1:x2]
+        label = self.labels[id][y1:y2,x1:x2]
         if np.product(image.shape) == 0:
           print("Erroneous bounds", xy, id, self.images[id].shape)
           return None,None
@@ -555,7 +700,7 @@ class CustomDatasetTest(Dataset):
             data = self.transform(image=image)
             image = data['image'].unsqueeze(0)
 
-        return image,xy
+        return image,label,xy,id
 
 
 
@@ -590,12 +735,33 @@ class Decoder(nn.Module):
 
 
 class RegressionPLModel(pl.LightningModule):
-    def __init__(self,pred_shape,size=256,enc='',with_norm=False, backbone="i3d", complexity=8):
-        super(RegressionPLModel, self).__init__()
 
-        self.save_hyperparameters()
-        self.mask_pred = np.zeros(self.hparams.pred_shape)
-        self.mask_count = np.zeros(self.hparams.pred_shape)
+    def __init__(self,pred_shape,size=256,enc='',with_norm=False,total_steps=500, train_dataset=None, check_val_every_n_epoch=1, backbone=None, wandb_logger=None, val_masks=None,name="", complexity=16):
+        super(RegressionPLModel, self).__init__()
+        self.save_hyperparameters("size", "enc", "with_norm", "total_steps", "check_val_every_n_epoch", "name")
+        self.name = name
+        #self.save_hyperparameters()
+        self.writer = SummaryWriter("runs/"+name)
+        self.hparams.pred_shape = pred_shape
+        self.val_masks = val_masks
+        self.wandb_logger = wandb_logger
+        if isinstance(self.hparams.pred_shape, dict):
+          self.mask_pred = {}
+          self.mask_count = {}
+          for k,pred_shape in self.hparams.pred_shape.items():
+            print("Initializing mask pred and count", k, pred_shape)
+            self.mask_pred[k] = np.zeros(pred_shape)
+            self.mask_count[k] = np.zeros(pred_shape)
+        else:
+          self.mask_pred = np.zeros(self.hparams.pred_shape)
+          self.mask_count = np.zeros(self.hparams.pred_shape)
+
+#    def __init__(self,pred_shape,size=256,enc='',with_norm=False, backbone="i3d", complexity=8):
+#        super(RegressionPLModel, self).__init__()
+
+#        self.save_hyperparameters()
+#        self.mask_pred = np.zeros(self.hparams.pred_shape)
+#        self.mask_count = np.zeros(self.hparams.pred_shape)
 
         self.loss_func1 = smp.losses.DiceLoss(mode='binary')
         self.loss_func2= smp.losses.SoftBCEWithLogitsLoss(smooth_factor=0.25)
@@ -639,18 +805,21 @@ class RegressionPLModel(pl.LightningModule):
         return pred_mask
     
     def training_step(self, batch, batch_idx):
-        x, y, xys = batch
+        x, y, xys,ids = batch
         outputs = self(x)
         #print("outputs.shape", outputs.shape, "y.shape", y.shape)
+        if outputs.shape != y.shape and y.shape[-2] > outputs.shape[-2]: # Downsample labels if bigger than outputs
+          y = F.interpolate(y, outputs.shape[-2:], mode="area") # Make
         if outputs.shape != y.shape:
-          outputs = F.interpolate(outputs, y.shape[-2:], mode="bilinear")
+          #outputs = F.interpolate(outputs, y.shape[-2:], mode="bilinear") # Stretch outputs to equal label size
+          outputs = F.interpolate(outputs, y.shape[-2:], mode="area") # Stretch outputs to equal label size
         loss1 = self.loss_func(outputs, y)
         diceloss = self.loss_func1(outputs, y)
         bceloss = self.loss_func2(outputs, y)
         loss1 = self.loss_func(outputs, y)
         mseloss = ((outputs - y) ** 2).mean()
         madloss = torch.abs(outputs - y).mean()
-        loss1 = loss1 + mseloss * 0.5 + madloss * 0.5
+        loss1 = loss1 #+ mseloss * 0.5 + madloss * 0.5
         writer.add_scalar("loss_mse/train", mseloss, self.current_epoch * len(self.training_dataloader) + batch_idx)
         writer.add_scalar("loss_mad/train", madloss, self.current_epoch * len(self.training_dataloader) + batch_idx)
         writer.add_scalar("loss_bce/train", bceloss, self.current_epoch * len(self.training_dataloader) + batch_idx)
@@ -662,6 +831,7 @@ class RegressionPLModel(pl.LightningModule):
         return {"loss": loss1}
 
     def validation_step(self, batch, batch_idx):
+        '''
         x,y,xyxys= batch
         batch_size = x.size(0)
         outputs = self(x)
@@ -692,7 +862,60 @@ class RegressionPLModel(pl.LightningModule):
 
         self.log("val/total_loss", loss1.item(),on_step=True, on_epoch=True, prog_bar=True)
         return {"loss": loss1}
-    
+        '''
+
+        x,y,xyxys,ids= batch
+        batch_size = x.size(0)
+        outputs = self(x)
+        print("outputs.shape", outputs.shape)
+        if y.shape != outputs.shape:
+          #y=F.interpolate(y,(4,4)) # TODO SethS: DISABLE ME!
+          #y=F.interpolate(y,outputs.shape[-2:], mode="bilinear") # Auto-adjust output shape.
+          y=F.interpolate(y,outputs.shape[-2:], mode="area") # Auto-adjust output shape.
+        y = F.interpolate(y, (1,1), mode="area")
+        outputs = F.interpolate(outputs, (1,1), mode="area")
+
+        loss1 = self.loss_func(outputs, y)
+        y_preds = torch.sigmoid(outputs).to('cpu')
+        #y_preds = torch.minimum(1, torch.relu(outputs).to('cpu'))
+        #y_preds = torch.relu(outputs).to('cpu')
+        print("min,max preds", y_preds.min().item(), y_preds.max().item())
+        for i, (x1, y1, x2, y2) in enumerate(xyxys):
+            x1,x2,y1,y2 = (int(c) for c in (x1,x2,y1,y2))
+            print(x1,x2,y1,y2, "xyxys,", ids[i], "mask_pred.shape", self.mask_pred[ids[i]].shape)
+            x1,x2,y1,y2 = x1,min(x2,self.mask_pred[ids[i]].shape[1]),y1,min(y2,self.mask_pred[ids[i]].shape[0]) # SethS Why would this be necessary? It isn't... Unless the validation masks and pred_shapes are different.
+            if x2-x1 <= 0 or y2-y1 <= 0:
+              print("Skipping OOB xyxys!",x1,y1,x2,y2)
+              continue
+            #print(x1, x2, y1, y2, "id", ids[i], [(k,v.shape) for k,v in self.mask_pred.items()], [(k,v.shape) for k,v in self.mask_count.items()])
+            #self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),scale_factor=4,mode='bilinear').squeeze(0).squeeze(0).numpy()
+            #self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy()
+            if True or y2-y1 > 1 or x2-x1 > 1:
+              #self.mask_pred[ids[i]][y1:y2, x1:x2] += np.clip(F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy(), 0, 1)
+              #self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy()
+              #self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='area').squeeze(0).squeeze(0).numpy() # It has to be squashed DOWN, not upsampled. Same sampling algorithm problems I used to run i>
+              self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy() # It has to be squashed DOWN, not upsampled. Same sampling algorithm problems I used to ru>
+            else:
+              #self.mask_pred[ids[i]][y1:y2, x1:x2] += np.clip(y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy(), 0, 1) # TODO: What if I don't apply np.clip while summing, but only AFTER???
+              self.mask_pred[ids[i]][y1:y2, x1:x2] += y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy() # TODO: What if I don't apply np.clip while summing, but only AFTER???
+            self.mask_count[ids[i]][y1:y2, x1:x2] += np.ones((y2-y1, x2-x1))
+            #print("Keeping xyxys", x1,y1,x2,y2, xyxys[i], ids[i])
+        self.log("val/total_loss", loss1.item(),on_step=True, on_epoch=True, prog_bar=True)
+        self.writer.add_scalar('Loss/valid', loss1.item(), self.current_epoch)
+        diceloss = self.loss_func1(outputs, y)
+        bceloss = self.loss_func2(outputs, y)
+        loss1 = self.loss_func(outputs, y)
+        mseloss = ((outputs - y) ** 2).mean()
+        madloss = torch.abs(outputs - y).mean()
+        self.writer.add_scalar("loss_mse/valid", mseloss, self.current_epoch * len(self.valid_dataloaders) + batch_idx)
+        self.writer.add_scalar("loss_mad/valid", madloss, self.current_epoch * len(self.valid_dataloaders) + batch_idx)
+        self.writer.add_scalar("loss_bce/valid", bceloss, self.current_epoch * len(self.valid_dataloaders) + batch_idx)
+        self.writer.add_scalar("loss_dice/valid", diceloss, self.current_epoch * len(self.valid_dataloaders) + batch_idx)
+        self.writer.add_scalar("loss/valid", loss1, self.current_epoch * len(self.valid_dataloaders) + batch_idx)
+
+
+
+    '''
     def on_validation_epoch_end(self):
         self.mask_pred = np.divide(self.mask_pred, self.mask_count, out=np.zeros_like(self.mask_pred), where=self.mask_count!=0)
         print("mask pred", self.mask_pred.shape)
@@ -702,6 +925,47 @@ class RegressionPLModel(pl.LightningModule):
         #reset mask
         self.mask_pred = np.zeros(self.hparams.pred_shape)
         self.mask_count = np.zeros(self.hparams.pred_shape)
+    '''
+    def on_validation_epoch_end(self):
+        print("Experiment name", self.name)
+        if isinstance(self.hparams.pred_shape, dict):
+          #print("mask_pred has keys", self.mask_pred.keys())
+          for k,pred_shape in self.hparams.pred_shape.items():
+            self.mask_pred[k] = np.divide(self.mask_pred[k], self.mask_count[k], out=np.zeros_like(self.mask_pred[k]), where=self.mask_count[k]!=0)
+            if self.mask_pred[k] is None or np.product(self.mask_pred[k].shape) == 0:
+              print("No mask pred for key", k, self.mask_pred[k])
+            else:
+              self.wandb_logger.log_image(key=f"preds_{k}", images=[np.clip(self.mask_pred[k],0,1)], caption=["probs"])
+              self.writer.add_image(f'{k}_preds', (self.mask_pred[k] - self.mask_pred[k].min()) / max(self.mask_pred[k].max()-self.mask_pred[k].min(), 0.01), self.current_epoch, dataformats="HW")
+              if self.val_masks is not None and k in self.val_masks:
+                self.wandb_logger.log_image(key=f"trues_{k}", images=[np.clip(self.val_masks[k],0,255)], caption=["probs"])
+                self.writer.add_image(f'{k}_trues', np.clip(self.val_masks[k][:,:,0],0,255), self.current_epoch, dataformats="HW")
+              else:
+                print("val_masks missing", k, self.val_masks.keys())
+        else:
+          self.mask_pred = np.divide(self.mask_pred, self.mask_count, out=np.zeros_like(self.mask_pred), where=self.mask_count!=0)
+          self.wandb_logger.log_image(key="preds", images=[np.clip(self.mask_pred,0,1)], caption=["probs"])
+          self.writer.add_image(f'preds', self.mask_pred, self.current_epoch, dataformats="HW")
+          if self.val_masks is not None:
+            self.wandb_logger.log_image(key=f"trues_{k}", images=[np.clip(self.val_masks[:,:,0],0,255)], caption=["probs"])
+        #print("Done logging! Resetting mask...")
+        #reset mask
+        if isinstance(self.hparams.pred_shape, dict):
+          self.mask_pred = {}
+          self.mask_count = {}
+          for k,pred_shape in self.hparams.pred_shape.items():
+            self.mask_pred[k] = np.zeros(pred_shape)
+            self.mask_count[k] = np.zeros(pred_shape)
+        else:
+          self.mask_pred = np.zeros(self.hparams.pred_shape)
+          self.mask_count = np.zeros(self.hparams.pred_shape)
+        #print("Done resetting masks!")
+        #self.train_dataset.labels = reload_masks(self.train_dataset.labels, CFG)
+        #exit()
+
+
+
+
     def configure_optimizers(self):
 
         optimizer = AdamW(self.parameters(), lr=CFG.lr)
@@ -771,7 +1035,7 @@ CFG.size = args.size
 CFG.stride = args.stride
 CFG.train_batch_size = args.batch_size
 
-#from dataloaders import *
+from dataloaders import *
 
 
 
@@ -782,6 +1046,17 @@ CFG.train_batch_size = args.batch_size
 #pred_shape=valid_mask_gt.shape
 torch.set_float32_matmul_precision('medium')
 
+scroll1val = ['20231012184423']
+fragments = ['20230702185753','20230929220926','20231005123336','20231012184423','20231007101619','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']
+scroll4_ids = ['20231111135340', '20231122192640', '20231210132040', '20240304141530', '20231215151901', '20240304144030'] + scroll1val
+scroll3_ids = ['20231030220150', '20231031231220']
+#scroll2_ids = []
+with open("scroll2.ids", 'r') as f:
+  scroll2_ids = [line.strip() for line in f.readlines()]
+#train_scrolls = "train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
+train_scrolls = CFG.basepath #"train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
+
+'''
 fragments=['20230820203112']
 fragments=['20231012184423']
 enc_i,enc,fold=0,'i3d',0
@@ -795,11 +1070,73 @@ for fid in fragments:
 
     pred_shape=tuple(t//CFG.scale for t in valid_mask_gt.shape)
     train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset()
+'''
+
+
+enc_i,enc,fold=0,'i3d',0
+fid = CFG.valid_id
+if True: #for fid in fragments:
+    #train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = [[,],]*8
+    #origscale = CFG.scale # TODO Multiscale training
+    #for scale in [CFG.scale // 2, CFG.scale, CFG.scale * 2]:
+    #  train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, scale=CFG.scale)
+    ''' # Use only if one training image.
+    r = CFG.size//2
+    tm = train_masks[fid]
+    #train_xyxys = [(c[1]-r,c[0]-r,c[1]+r,c[0]+r) for c in np.argwhere(train_masks[fid] >= 0).tolist() if c[0]-r > 0 and c[1]-r > 0 and c[0]+r < tm.shape[0] and c[1]+r < tm.shape[1]]
+    #train_xyxys = [(c[1]-r,c[0]-r,c[1]+r,c[0]+r) for c in np.argwhere(train_masks[fid] >= 0).tolist() if c[0]-r > 0 and c[1]-r > 0 and c[0]+r < tm.shape[0] and c[1]+r < tm.shape[1] and c[0] % CFG.stride == 0 and c[1] % CFG.stride == 0]
+    train_stride = 1 #CFG.stride // 16 # TODO Pygo optimize this!
+    sidx = -1
+    eidx = 0
+    for i,v in enumerate(train_ids):
+      if v == fid:
+        if sidx < 0:
+          sidx = i
+        eidx = max(eidx,i)
+    del train_ids[sidx:eidx+1]
+    del train_xyxys[sidx:eidx+1]
+    new_train_xyxys = [(c[1]-r,c[0]-r,c[1]+r,c[0]+r) for c in np.argwhere(train_masks[fid] >= 0).tolist() if c[0]-r > 0 and c[1]-r > 0 and c[0]+r < tm.shape[0] and c[1]+r < tm.shape[1] and c[0] % train_stride == 0 and c[1] % train_stride == 0]
+    if len(new_train_xyxys) < 10000:
+      new_train_xyxys = new_train_xyxys * (10000 // len(new_train_xyxys))
+    new_train_ids = [fid] * len(new_train_xyxys) #train_ids * (100000 // len(train_ids))
+    train_xyxys += new_train_xyxys
+    train_ids += new_train_ids
+    print(len(train_images)
+    '''
+    CFG.valid_id=fid
+    fragment_id = CFG.valid_id
+    import datetime
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    name = f'{args.model}_scale{CFG.scale}_size{CFG.size}_tilesize{CFG.tile_size}_stride{CFG.stride}_{ts}'
+    run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
+    pred_shape = {}
+    valid_ids = list(set(scroll4_ids + scroll3_ids + scroll2_ids)) #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
+    train_ids = list((set(fragments) - set(valid_ids)) - set(scroll1val)) #+ set( #scroll4_ids) 
+    for scroll_id in set(valid_ids + train_ids): #fragments + scroll4_ids + scroll2_ids + scroll3_ids:
+      valid_mask_gt = cv2.imread(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png", 0)
+      if valid_mask_gt is None:
+        valid_mask_gt = cv2.imread(f"{train_scrolls}/{scroll_id}/{scroll_id}_mask.png", 0)
+        if valid_mask_gt is None:
+          print("Validation mask not found, skipping!", f"{train_scrolls}/{scroll_id}/{scroll_id}_mask.png")
+          continue
+        if not os.path.isfile(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png"):
+          print("Writing nonexistent ink labels file", f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png")
+          print(scroll_id, f"{train_scrolls}/{scroll_id}/{scroll_id}_mask.png", "valid_mask_gt", valid_mask_gt)
+          cv2.imwrite(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png", np.zeros_like(valid_mask_gt))
+      pred_shape[scroll_id]=tuple(int(c/CFG.scale) for c in valid_mask_gt.shape)
+      print("pred shape for scroll", scroll_id, pred_shape[scroll_id])
+      print("pred_shape", scroll_id, pred_shape[scroll_id])
+    print("Got all validation scroll ID shapes for prediction and logging")
+    norm=fold==1
+    wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
+    print('FOLD : ',fold)
+    multiplicative = lambda epoch: 0.9
+    train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale)
     print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
     train_dataset = CustomDataset(
         train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG))
-    valid_dataset = CustomDataset(
+    valid_dataset = CustomDatasetTest(
         valid_images, CFG,xyxys=valid_xyxys, labels=valid_masks, ids=valid_ids, transform=get_transforms(data='valid', cfg=CFG))
 
     train_loader = DataLoader(train_dataset,
@@ -820,10 +1157,16 @@ for fid in fragments:
     non_local=True
     #if "pygo" in args.model:
     #  from pygoflat import 
+    '''
     if len(args.load) == 0:
       model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, backbone=args.model)
     else:
       model=RegressionPLModel.load_from_checkpoint(args.load, enc='i3d',pred_shape=pred_shape,size=CFG.size, name=run_slug, backbone=args.model)
+    '''
+    model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity)
+    if len(args.load) > 0:
+      model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", pred_shape=pred_shape, size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity)
+    wandb_logger.watch(model, log="all", log_freq=100)
 
     print('FOLD : ',fold)
     wandb_logger.watch(model, log="all", log_freq=100)
