@@ -25,13 +25,14 @@ class Decoder(nn.Module):
 
     def forward(self, feature_maps):
         for i in range(len(feature_maps)-1, 0, -1):
-            f_up = F.interpolate(feature_maps[i], scale_factor=2, mode="bilinear")
+            #f_up = F.interpolate(feature_maps[i], scale_factor=2, mode="bilinear")
+            f_up = feature_maps[i]
             f = torch.cat([feature_maps[i-1], f_up], dim=1)
             f_down = self.convs[i-1](f)
             feature_maps[i-1] = f_down
 
         x = self.logit(feature_maps[0])
-        mask = self.up(x)
+        #mask = self.up(x)
         return mask
 
 class MaxPool3dSamePadding(nn.MaxPool3d):
@@ -160,7 +161,7 @@ class InceptionModule(nn.Module):
                           name=name+'/Branch_1/Conv3d_0b_3x3')
         self.b2a = Unit3D(in_channels=in_channels, output_channels=out_channels[3], kernel_shape=[1, 1, 1], padding=0,
                           name=name+'/Branch_2/Conv3d_0a_1x1')
-        self.b2b = Unit3D(in_channels=out_channels[3], output_channels=out_channels[4], kernel_shape=[5, 5, 5],
+        self.b2b = Unit3D(in_channels=out_channels[3], output_channels=out_channels[4], kernel_shape=[3, 3, 3],
                           name=name+'/Branch_2/Conv3d_0b_5x5')
         self.b3a = MaxPool3dSamePadding(kernel_size=[3, 3, 3],
                                 stride=(1, 1, 1), padding=0)
@@ -255,35 +256,35 @@ class InceptionI3d(nn.Module):
         c = complexity
         self.end_points = {}
         end_point = 'Conv3d_1a_7x7'
-        self.end_points[end_point] = Unit3D(in_channels=in_channels, output_channels=c*4, kernel_shape=[7, 7, 7],
-                                            stride=(2, 2, 2), padding=(3,3,3),  name=name+end_point) # 32,32,32; 7,7,7
+        self.end_points[end_point] = Unit3D(in_channels=in_channels, output_channels=c, kernel_shape=[7, 1, 1],
+                                            stride=(2, 1, 1), padding=(3,1,1),  name=name+end_point) # 32,32,32; 7,7,7
         down = down // 2
         if self._final_endpoint == end_point or down == 1: return
         
         end_point = 'MaxPool3d_2a_3x3'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[1, 3, 3], stride=(1, 2, 2),
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[1, 1, 1], stride=(1, 1, 1),
                                                              padding=0) # 16,16,32; 14,14,7
         down = down // 2
         if self._final_endpoint == end_point or down == 1: return
         
         end_point = 'Conv3d_2b_1x1'
-        self.end_points[end_point] = Unit3D(in_channels=c*4, output_channels=c*4, kernel_shape=[1, 1, 1], padding=0,
+        self.end_points[end_point] = Unit3D(in_channels=c, output_channels=c*2, kernel_shape=[1, 1, 1], padding=0,
                                        name=name+end_point) # 16,16,32; 14,14,7
         if self._final_endpoint == end_point: return
         
         end_point = 'Conv3d_2c_3x3'
-        self.end_points[end_point] = Unit3D(in_channels=c*4, output_channels=c*12, kernel_shape=[3, 3, 3], padding=1,
+        self.end_points[end_point] = Unit3D(in_channels=c*2, output_channels=c*6, kernel_shape=[3, 1, 1], padding=1,
                                        name=name+end_point)
         if self._final_endpoint == end_point: return
 
         end_point = 'MaxPool3d_3a_3x3'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[1, 3, 3], stride=(1, 2, 2),
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[1, 1, 1], stride=(1, 1, 1),
                                                              padding=0) # 8,8,32; 28,28,7
         down = down // 2 # 8x downsampling so far, with only 2x channel downsampling (to 15)
         if self._final_endpoint == end_point or down == 1: return
         
         end_point = 'Mixed_3b'
-        self.end_points[end_point] = InceptionModule(c*12, [c*4,c*6,c*8,c,c*2,c*2], name+end_point)
+        self.end_points[end_point] = InceptionModule(c*6, [c*4,c*6,c*8,c,c*2,c*2], name+end_point)
         if self._final_endpoint == end_point: return
 
         end_point = 'Mixed_3c'
@@ -291,8 +292,8 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'MaxPool3d_4a_3x3'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[3, 3, 3], stride=(2, 2, 2),
-                                                             padding=0)
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[3, 3, 3], stride=(2, 1, 1),
+                                                             padding=1)
         down = down // 2 # 16x downsampling so far, and 2x channelwise (8)
         if self._final_endpoint == end_point or down == 1: return # 4,4,8; 56,56,14
 
@@ -317,7 +318,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'MaxPool3d_5a_2x2'
-        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[2, 2, 2], stride=(2, 2, 2),
+        self.end_points[end_point] = MaxPool3dSamePadding(kernel_size=[2, 1, 1], stride=(2, 1, 1),
                                                              padding=0)
         down = down // 2 # 32x downsampling, and 4x channelwise 2,2,4
         if self._final_endpoint == end_point or down == 1: return

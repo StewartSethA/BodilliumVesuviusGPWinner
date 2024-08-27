@@ -96,12 +96,12 @@ for xoffset in range(scrollstart, 4096, 512): #CFG.size): #512, 1024: #4, 8: #32
       if valid_mask_gt is None:
         valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"{train_scrolls}/{scroll_id}/{scroll_id}_mask.png", 0)
       pred_shape[scroll_id]=tuple(int(c/CFG.scale) for c in valid_mask_gt.shape)
-      print("pred_shape", scroll_id, pred_shape[scroll_id])
-    print("Got all validation scroll ID shapes for prediction and logging")
+      #print("pred_shape", scroll_id, pred_shape[scroll_id])
+    #print("Got all validation scroll ID shapes for prediction and logging")
     norm=fold==1
     wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
 
-    print('FOLD : ',fold)
+    #print('FOLD : ',fold)
     multiplicative = lambda epoch: 0.9
 
     trainer = pl.Trainer(
@@ -129,15 +129,15 @@ for xoffset in range(scrollstart, 4096, 512): #CFG.size): #512, 1024: #4, 8: #32
     valid_ids = set(fragments) #set([CFG.valid_id])
 
     train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, scale=CFG.scale)
-    print(train_images[fid].shape)
+    #print(train_images[fid].shape)
     #inkwidth=xoffset * 3 // 2
     vtrim = 1024//CFG.scale #1*1024//CFG.scale//CFG.size
     totwidth = columnwidth + noinkwidth #inkwidth + xoffset
     cv2.imwrite(f'{fid}_{CFG.scale}.image.png', train_images[fid].mean(axis=2))
     cv2.imwrite(f'{fid}_{CFG.scale}.mask.png', train_masks[fid].mean(axis=2))
     train_images[fid] = train_images[fid][vtrim:-vtrim,xoffset:totwidth+xoffset]
-    print("TRAIN images.shape", train_images[fid].shape)
-    print("TRAIN mask.shape", train_masks[fid].shape)
+    #print("TRAIN images.shape", train_images[fid].shape)
+    #print("TRAIN mask.shape", train_masks[fid].shape)
     #train_masks[fid] = train_masks[fid][vtrim:-vtrim,:totwidth,:]
     train_masks[fid] = train_masks[fid][vtrim:-vtrim,xoffset:totwidth+xoffset,:]
     #train_masks[fid][:,:xoffset,:] = 0 #255
@@ -157,7 +157,7 @@ for xoffset in range(scrollstart, 4096, 512): #CFG.size): #512, 1024: #4, 8: #32
     if len(train_xyxys) < 10000:
       train_xyxys = train_xyxys * (10000 // len(train_xyxys))
     train_ids = [fid] * len(train_xyxys) #train_ids * (100000 // len(train_ids))
-    print(len(train_images))
+    #print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
     train_dataset = CustomDataset(
         train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG), scale=CFG.scale)

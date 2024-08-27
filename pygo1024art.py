@@ -90,12 +90,12 @@ for xoffset in 512, 1024: #4, 8: #32, 16, 8, 48, 56:
       if valid_mask_gt is None:
         valid_mask_gt = cv2.imread(CFG.comp_dataset_path + f"train_scrolls/{scroll_id}/{scroll_id}_mask.png", 0)
       pred_shape[scroll_id]=tuple(int(c/CFG.scale) for c in valid_mask_gt.shape)
-      print("pred_shape", scroll_id, pred_shape[scroll_id])
-    print("Got all validation scroll ID shapes for prediction and logging")
+      #print("pred_shape", scroll_id, pred_shape[scroll_id])
+    #print("Got all validation scroll ID shapes for prediction and logging")
     norm=fold==1
     wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
 
-    print('FOLD : ',fold)
+    #print('FOLD : ',fold)
     multiplicative = lambda epoch: 0.9
 
     trainer = pl.Trainer(
@@ -123,15 +123,15 @@ for xoffset in 512, 1024: #4, 8: #32, 16, 8, 48, 56:
     valid_ids = set(fragments) #set([CFG.valid_id])
 
     train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, scale=CFG.scale)
-    print(train_images['20231012184423'].shape)
+    #print(train_images['20231012184423'].shape)
     inkwidth=xoffset * 3 // 2
     vtrim = 128 #1*1024//CFG.scale//CFG.size
     totwidth = inkwidth + xoffset
     #cv2.imwrite(f'20231012184423_{CFG.scale}.image.png', train_images['20231012184423'].mean(axis=2))
     cv2.imwrite(f'20231012184423_{CFG.scale}.mask.png', train_masks['20231012184423'].mean(axis=2))
     train_images['20231012184423'] = train_images['20231012184423'][vtrim:-vtrim,:totwidth]
-    print("TRAIN images.shape", train_images['20231012184423'].shape)
-    print("TRAIN mask.shape", train_masks['20231012184423'].shape)
+    #print("TRAIN images.shape", train_images['20231012184423'].shape)
+    #print("TRAIN mask.shape", train_masks['20231012184423'].shape)
     train_masks['20231012184423'] = train_masks['20231012184423'][vtrim:-vtrim,:totwidth,:]
     train_masks['20231012184423'][:,:xoffset,:] = 0 #255
     train_masks['20231012184423'][:,xoffset:totwidth,:] = 255
@@ -148,7 +148,7 @@ for xoffset in 512, 1024: #4, 8: #32, 16, 8, 48, 56:
     if len(train_xyxys) < 10000:
       train_xyxys = train_xyxys * (10000 // len(train_xyxys))
     train_ids = ['20231012184423'] * len(train_xyxys) #train_ids * (100000 // len(train_ids))
-    print(len(train_images))
+    #print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
     train_dataset = CustomDataset(
         train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG), scale=CFG.scale)

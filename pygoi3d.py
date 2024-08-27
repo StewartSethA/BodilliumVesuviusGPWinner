@@ -210,7 +210,7 @@ class InceptionI3d(nn.Module):
           ValueError: if `final_endpoint` is not recognized.
         """
 
-        print("USING PYGO INCEPTION 3D")
+        #print("USING PYGO INCEPTION 3D")
         if final_endpoint not in self.VALID_ENDPOINTS:
             raise ValueError('Unknown final endpoint %s' % final_endpoint)
 
@@ -328,13 +328,13 @@ class InceptionI3d(nn.Module):
             self.add_module(k, self.end_points[k])
         
     def forward(self, x):
-        print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+        #print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         if self.forward_features:
             features=[]
             for end_point in self.VALID_ENDPOINTS:
                 if end_point in self.end_points:
                     x = self._modules[end_point](x) # use _modules to work with dataparallel
-                    print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+                    #print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
                     if end_point in self.FEATURE_ENDPOINTS:
                         features.append(x)
             # x = self.logits(self.dropout(self.avg_pool(x)))
@@ -346,25 +346,25 @@ class InceptionI3d(nn.Module):
             for end_point in self.VALID_ENDPOINTS:
                 if end_point in self.end_points:
                     x = self._modules[end_point](x) # use _modules to work with dataparallel
-                    print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+                    #print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
             x = self.logits(self.dropout(self.avg_pool(x)))
-            print("I3D", "logits", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+            #print("I3D", "logits", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
             if self._spatial_squeeze:
                 logits = x.squeeze(3).squeeze(3)
             x = self.final_pool(x)
-            print("I3D", "final_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+            #print("I3D", "final_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
 
             x = x.view(x.size(0), -1)
-            print("I3D", "reshaped", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+            #print("I3D", "reshaped", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
             return x
             # # logits is batch X time X classes, which is what we want to work with
 
     def extract_features(self, x):
-        print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+        #print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         for end_point in self.VALID_ENDPOINTS:
             if end_point in self.end_points:
                 x = self._modules[end_point](x)
-                print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+                #print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         x = self.avg_pool(x)
-        print("I3D", "avg_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+        #print("I3D", "avg_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         return x

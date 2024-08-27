@@ -1,4 +1,4 @@
-print("Importing...")
+#print("Importing...")
 import sys
 import os
 os.environ["WANDB_MODE"] = "offline"
@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 from pytorch_lightning.loggers import WandbLogger
 import random
 import numpy as np
@@ -30,9 +30,11 @@ import time
 import json
 from torch.utils.tensorboard import SummaryWriter
 from skimage.measure import block_reduce
-print("Done importing")
-print("Executable path", sys.executable)
+#print("Done importing")
+#print("Executable path", sys.executable)
 
+from config import CFG
+'''
 class CFG:
     # ============== comp exp name =============
     comp_name = 'vesuvius'
@@ -149,6 +151,7 @@ class CFG:
     ]
     rotate = A.Compose([A.Rotate(8,p=1)])
     #rotate = A.Compose([A.Rotate(90,p=1)])
+'''
 def init_logger(log_file):
     from logging import getLogger, INFO, FileHandler, Formatter, StreamHandler
     logger = getLogger(__name__)
@@ -182,7 +185,6 @@ def cfg_init(cfg, mode='train'):
 
     if mode == 'train':
         make_dirs(cfg)
-cfg_init(CFG)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 writer = None
@@ -516,6 +518,7 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
     return images, masks, xyxys, ids, pads
 
 #@jit(nopython=True)
+'''
 def get_train_valid_dataset():
     train_images = {}
     train_masks = {}
@@ -530,6 +533,7 @@ def get_train_valid_dataset():
     train_images, train_masks, train_xyxys, train_ids = get_xyxys(train_ids, False)
     valid_images, valid_masks, valid_xyxys, valid_ids = get_xyxys(valid_ids, True)
     return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
+'''
 
 def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_idx=45, scale=1):
     start_idx = 0
@@ -982,15 +986,16 @@ parser.add_argument('--scale', type=int, default=1, required=False)
 parser.add_argument('--tile_size', type=int, default=256, required=False)
 parser.add_argument('--size', type=int, default=64, required=False)
 parser.add_argument('--stride', type=int, default=32, required=False)
-parser.add_argument('--model', type=str, default="pygoflat", required=False)
+#parser.add_argument('--model', type=str, default="pygoflat", required=False)
+parser.add_argument('--model', type=str, default="pygo1x1", required=False)
 parser.add_argument('--name', type=str, default="default", required=False)
 parser.add_argument('--load', type=str, default="", required=False)
 parser.add_argument('--complexity', type=int, default=16, required=False)
 parser.add_argument('--epochs', type=int, default=12, required=False)
 parser.add_argument('--batch_size', type=int, default=256, required=False)
 parser.add_argument('--val_batch_size', type=int, default=1, required=False)
-parser.add_argument('--val_size', type=int, default=1, required=False)
-parser.add_argument('--val_stride', type=int, default=1, required=False)
+parser.add_argument('--val_size', type=int, default=224, required=False)
+parser.add_argument('--val_stride', type=int, default=112, required=False)
 parser.add_argument('--minbatches', type=int, default=1000000, required=False)
 parser.add_argument('--mode', type=str, default="normal", required=False)
 parser.add_argument('--scrollsval', type=str, default="1,2,3,4", required=False)
@@ -1010,16 +1015,64 @@ from dataloaders import *
 torch.set_float32_matmul_precision('medium')
 
 scroll1val = args.fragmentsval.split(",")
-scroll1_ids = fragments = ['20230702185753','20230929220926','20231005123336','20231012184423','20231007101619','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']
-scroll4_ids = ['20231111135340', '20231122192640', '20231210132040', '20240304141530', '20231215151901', '20240304144030', '20240304161940'] #+ scroll1val
-scroll3_ids = ['20231030220150', '20231031231220']
+#scroll1_ids = fragments = ['20230702185753','20230929220926','20231005123336','20231012184423','20231007101619','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']
+
+#scroll1_ids = fragments = ['20231005123336']
+#scroll1_ids = fragments = ['20230702185753','20230929220926','20231005123336'] #,'20231012184423','20231007101619','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']
+#scroll4_ids = ['20231111135340', '20231122192640', '20231210132040', '20240304141530', '20231215151901', '20240304144030', '20240304161940'] #+ scroll1val
+#scroll3_ids = ['20231030220150', '20231031231220']
 #scroll2_ids = []
-with open("scroll2.ids", 'r') as f:
-  scroll2_ids = [line.strip() for line in f.readlines()]
+#with open("scroll2.ids", 'r') as f:
+#  scroll2_ids = [line.strip() for line in f.readlines()]
 #train_scrolls = "train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
-train_scrolls = CFG.basepath #"train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+enc_i,enc,fold=0,'i3d',0
+fid = CFG.valid_id
+
+name = f'{args.model}_scale{CFG.scale}_size{CFG.size}_tilesize{CFG.tile_size}_stride{CFG.stride}_{args.name}'
+CFG.model_dir = os.path.join("outputs", name)
+cfg_init(CFG)
+
+run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
+
+wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
+
+trainer = pl.Trainer(
+        max_epochs=args.epochs,
+        accelerator="gpu",
+        devices=torch.cuda.device_count(),
+        logger=wandb_logger,
+        default_root_dir='./', #"/content/gdrive/MyDrive/vesuvius_model/training/outputs",
+        accumulate_grad_batches=1,
+        #auto_scale_batch_size='binsearch',
+        precision='16-mixed',
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
+        strategy='ddp', #_find_unused_parameters_true',
+        callbacks=[ModelCheckpoint(filename=f'{args.model}12_64_{fid}_{fold}_fr_{enc}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=1),],
+                    #StochasticWeightAveraging(2e-5, annealing_epochs=5, device=None)],
+
+)
+
+if trainer.is_global_zero:
+  print(bcolors.OKGREEN, "fragments", fragments, "(from dataloaders import *)", bcolors.ENDC)
+#exit()
 
 '''
+train_scrolls = CFG.basepath #"train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
+
 fragments=['20230820203112']
 fragments=['20231012184423']
 enc_i,enc,fold=0,'i3d',0
@@ -1036,8 +1089,6 @@ for fid in fragments:
 '''
 
 
-enc_i,enc,fold=0,'i3d',0
-fid = CFG.valid_id
 if True: #for fid in fragments:
     #train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = [[,],]*8
     #origscale = CFG.scale # TODO Multiscale training
@@ -1070,8 +1121,6 @@ if True: #for fid in fragments:
     fragment_id = CFG.valid_id
     import datetime
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    name = f'{args.model}_scale{CFG.scale}_size{CFG.size}_tilesize{CFG.tile_size}_stride{CFG.stride}_{args.name}'
-    run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
     #pred_shape = {}
     valid_ids = scroll1val
     if "4" in args.scrollsval:
@@ -1082,10 +1131,15 @@ if True: #for fid in fragments:
       valid_ids = valid_ids + scroll2_ids
     if "1" in args.scrollsval:
       valid_ids = valid_ids + fragments #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
-    print("Valid ids", valid_ids)
-    valid_ids = list(set(valid_ids)) #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
+    #print("Valid ids", valid_ids)
+    #valid_ids = list(set(valid_ids))[:3] #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
+    valid_ids = list(set(valid_ids)) + ["20240304144031",] #[:3])) #[:3] #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #valid_ids = list(set(scroll4_ids + scroll3_ids + scroll2_ids + scroll1val + fragments)) #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
-    train_ids = list((set(fragments) - set(valid_ids)) - set(scroll1val)) #+ set( #scroll4_ids) 
+    train_ids = scroll1_ids + list((set(fragments) - set(valid_ids)) - set(scroll1val)) + ["20240304144031", "20231210132040", "20231215151901", "20231122192640", "20231111135340", "20240304161941", "20240304141531"] #+ set( #scroll4_ids) 
+
+    if trainer.is_global_zero:
+      print(bcolors.OKGREEN, "train_ids", len(train_ids), train_ids, bcolors.ENDC)
+      print(bcolors.OKBLUE, "valid_ids", len(valid_ids), valid_ids, bcolors.ENDC)
     '''
     for scroll_id in set(valid_ids + train_ids): #fragments + scroll4_ids + scroll2_ids + scroll3_ids:
       valid_mask_gt = cv2.imread(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png", 0)
@@ -1102,12 +1156,18 @@ if True: #for fid in fragments:
       print("pred shape for scroll", scroll_id, pred_shape[scroll_id])
       print("pred_shape", scroll_id, pred_shape[scroll_id])
     '''
-    print("Got all validation scroll ID shapes for prediction and logging")
-    wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
+    #print("Got all validation scroll ID shapes for prediction and logging")
+    wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
     multiplicative = lambda epoch: 0.9
-    train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale)
-    print(len(train_images))
-    valid_xyxys = np.stack(valid_xyxys)
+    train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale, is_main=trainer.is_global_zero)
+    #train_xyxys, train_ids = train_xyxys[:100000], train_ids[:100000]
+    #train_xyxys, train_ids = train_xyxys[:100000], train_ids[:100000]
+    #print("Training images:", len(train_images))
+    #print("len valid_xyxys", valid_xyxys, valid_xyxys.__class__.__name__)
+    #valid_xyxys = np.stack(valid_xyxys) #[:100000])
+
+    #print("stacked valid_xyxys", valid_xyxys.shape)
+    #print("Creating datasets")
     train_dataset = CustomDataset(
         train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG))
     valid_dataset = CustomDatasetTest(
@@ -1122,10 +1182,11 @@ if True: #for fid in fragments:
                                 batch_size=CFG.valid_batch_size,
                                 shuffle=False,
                                 num_workers=CFG.num_workers, pin_memory=True, drop_last=True)
+    #print("Done creating datasets")
     if args.mode == "dataonly":
       exit()
 
-    wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
+    #print("Creating WandB logger")
     non_local=False
     #if "pygo" in args.model:
     #  from pygoflat import 
@@ -1136,10 +1197,11 @@ if True: #for fid in fragments:
       model=RegressionPLModel.load_from_checkpoint(args.load, enc='i3d',pred_shape=pred_shape,size=CFG.size, name=run_slug, backbone=args.model)
     '''
     #model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity)
-    model=RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader)
+    #print("Creating model")
+    model = RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG, is_main=trainer.is_global_zero)
     if len(args.load) > 0:
       #model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", pred_shape=pred_shape, size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity)
-      model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader)
+      model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG)
     #model.train_dataloaders = train_loader
     #model.valid_dataloaders = valid_loader
     #print('FOLD : ',fold)
@@ -1147,22 +1209,11 @@ if True: #for fid in fragments:
     multiplicative = lambda epoch: 0.9
     model.valid_dataloader = valid_loader
     model.training_dataloader = train_loader
-    trainer = pl.Trainer(
-        max_epochs=args.epochs,
-        accelerator="gpu",
-        devices=torch.cuda.device_count(),
-        logger=wandb_logger,
-        default_root_dir='./', #"/content/gdrive/MyDrive/vesuvius_model/training/outputs",
-        accumulate_grad_batches=1,
-        precision='16-mixed',
-        gradient_clip_val=1.0,
-        gradient_clip_algorithm="norm",
-        strategy='ddp_find_unused_parameters_true',
-        callbacks=[ModelCheckpoint(filename=f'{args.model}12_64_{fid}_{fold}_fr_{enc}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=5),
-
-                    ],
-
-    )
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+    #print("Creating trainer")
+    #tuner = pl.tuner.Tuner(trainer)
+    #tuner.scale_batch_size(model, mode='binsearch')
+    #print("Beginning training")
+    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader) #, auto_scale_batch_size='binsearch')
 
     wandb.finish()
+

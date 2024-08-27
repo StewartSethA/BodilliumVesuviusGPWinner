@@ -124,7 +124,7 @@ class Unit3D(nn.Module):
 class InceptionModule(nn.Module):
     def __init__(self, in_channels, out_channels, name,non_local=False):
         super(InceptionModule, self).__init__()
-        print("Creating PYGO inception module")
+        #print("Creating PYGO inception module")
         self.non_local=non_local
         if self.non_local: 
             self.nl_block=NLBlockND(in_channels=in_channels, mode='gaussian', dimension=3)
@@ -153,7 +153,7 @@ class InceptionModule(nn.Module):
         b3 = self.b3b(self.b3a(x))
         return torch.cat([b0,b1,b2,b3], dim=1)
 
-print("Defining Pygo I3d")
+#print("Defining Pygo I3d")
 class InceptionI3d(nn.Module):
     """Inception-v1 I3D architecture.
     The model is introduced in:
@@ -210,7 +210,7 @@ class InceptionI3d(nn.Module):
           ValueError: if `final_endpoint` is not recognized.
         """
 
-        print("USING PYGO INCEPTION 3D")
+        #print("USING PYGO INCEPTION 3D")
         if final_endpoint not in self.VALID_ENDPOINTS:
             raise ValueError('Unknown final endpoint %s' % final_endpoint)
 
@@ -361,19 +361,19 @@ class InceptionI3d(nn.Module):
             if self._spatial_squeeze:
                 logits = x.squeeze(3).squeeze(3)
             x = self.final_pool(x)
-            print("I3D", "final_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+            #print("I3D", "final_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
 
             x = x.view(x.size(0), -1)
-            print("I3D", "reshaped", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+            #print("I3D", "reshaped", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
             return x
             # # logits is batch X time X classes, which is what we want to work with
 
     def extract_features(self, x):
-        print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+        #print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         for end_point in self.VALID_ENDPOINTS:
             if end_point in self.end_points:
                 x = self._modules[end_point](x)
-                print("I3D", end_point, self._modules[end_point].weight.shape, 2 * np.product(self._modules[end_point].weight.shape)/1000000, "MB weights", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16 activations")
+                #print("I3D", end_point, self._modules[end_point].weight.shape, 2 * np.product(self._modules[end_point].weight.shape)/1000000, "MB weights", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16 activations")
         x = self.avg_pool(x)
-        print("I3D", "avg_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+        #print("I3D", "avg_pool", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
         return x
