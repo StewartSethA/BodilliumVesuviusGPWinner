@@ -670,7 +670,8 @@ class CustomDataset(Dataset):
             x1,y1,x2,y2=xy=self.xyxys[idx]
             if x2-x1 != y2-y1:
               print("MISMATCHED XY!", x1,y1,x2,y2)
-            if x2 >= self.images[id].shape[1] or y2 >= self.images[id].shape[0]:
+            #if x2 > self.images[id].shape[1] or y2 > self.images[id].shape[0]:
+            if x1 >= self.images[id].shape[1] or y1 >= self.images[id].shape[0]:
               print("OOB XY!", x1,y1,x2,y2, self.images[id].shape)
             #print(x1,y1,x2,y2)
             #exit()
@@ -700,9 +701,20 @@ class CustomDataset(Dataset):
             #  #print("Exceeded channel depth bounds for", id, self.images[id].shape)
             #  #return self[idx+1]
             image = self.images[id][y1:y2,x1:x2,start:end] # SethS random depth select aug! #,self.start:self.end] #[idx]
+            #image = torch.nn.functional.pad(image,(0,0,0,(x2-x1)-image.shape[1],0,(y2-y1)-image.shape[0]), value=0)
+            if image.shape[0] != y2-y1 or image.shape[1] != x2-x1:
+              #print("Image padding!", image.shape, x1,x2,y1,y2)
+              image = np.pad(image,((0,(y2-y1)-image.shape[0]),(0,(x2-x1)-image.shape[1]),(0,0)), constant_values=0)
+              #print("New shape:", image.shape)
             #if end-start > self.cfg.in_chans: # Stretch
             #  image = image# TODO Seth
             label = self.labels[id][y1:y2,x1:x2]
+            if label.shape[0] != y2-y1 or label.shape[1] != x2-x1:
+              #print("Label padding!", label.shape, x1,x2,y1,y2)
+              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
+              label = np.pad(label,((0,(y2-y1)-label.shape[0]),(0,(x2-x1)-label.shape[1]),(0,0)), constant_values=0)
+              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
+              #print("New shape:", label.shape)
 
             if np.product(label.shape) == 0 or np.product(image.shape) == 0:
               print("BAD image.shape", image.shape, "label.shape", label.shape, "id", id, "idx", idx, "x1,x2,y1,y2", x1, x2, y1, y2, self.images[id].shape, self.labels[id].shape)
@@ -741,6 +753,8 @@ class CustomDataset(Dataset):
                 #print(image.shape)
                 #exit()
                 label = data['mask']/255
+                if random.random() > 0.5:
+                  label = label * torch.rand_like(label) + torch.rand_like(label) * random.random() * 0.1 # SethS 2:31 p.m. LABEL SMOOTHING
                 image = image.half().to(label.device)
                 #if end-start > self.cfg.in_chans: # Squash
                 #print("Image shape", image.shape, label.shape)

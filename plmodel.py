@@ -210,8 +210,8 @@ class RegressionPLModel(pl.LightningModule):
         #      print("Skipping misshapen xyxys!",x1,y1,x2,y2)
         #      continue
         #x2,y2 = x1+self.cfg.size, y1+self.cfg.size
-        if batch_idx % 10 == 0 and self.trainer.is_global_zero:
-          print("x.shape", x.shape, "y.shape", y.shape, "xys", len(xys), xys[:3]) #[0].shape, xys[:3])
+        if batch_idx % 500 == 0 and self.trainer.is_global_zero:
+          print("x.shape", x.shape, "y.shape", y.shape, "outputs.shape", outputs.shape, "y.stats", y.min(), y.max(), y.mean(), y.std(), "out.stats", outputs.min(), outputs.max(), outputs.mean(), outputs.std(), "xys", len(xys), xys[:3])
 
         if y.shape != outputs.shape:
           print("Outputs not same shape", outputs.shape, y.shape)
@@ -220,7 +220,6 @@ class RegressionPLModel(pl.LightningModule):
           #y=F.interpolate(y,outputs.shape[-2:], mode="area") # TODO SethS: DISABLE ME!
         #y = F.interpolate(y, (1,1), mode="area")
         #outputs = F.interpolate(outputs, (1,1), mode="area")
-        print("y.shape", y.shape, "outputs.shape", outputs.shape, "y.stats", y.min(), y.max(), y.mean(), y.std(), "out.stats", outputs.min(), outputs.max(), outputs.mean(), outputs.std())
         mseloss = ((outputs - y) ** 2).mean()
         loss1 = self.loss_func(outputs, y) + mseloss
         #if batch_idx % 250 == 0:

@@ -24,7 +24,6 @@ from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from i3dallnl import InceptionI3d
-from warmup_scheduler import GradualWarmupScheduler
 from scipy import ndimage
 import time
 import json
@@ -64,6 +63,7 @@ def make_dirs(cfg):
 
 def cfg_init(cfg, mode='train'):
     set_seed(cfg.seed)
+    print("set_seed1x1", cfg.seed)
     # set_env_name()
     # set_dataset_path(cfg)
 
@@ -77,27 +77,9 @@ def get_transforms(data, cfg):
         aug = A.Compose(cfg.train_aug_list)
     elif data == 'valid':
         aug = A.Compose(cfg.valid_aug_list)
-
     return aug
 
-# from resnetall import generate_model
-def init_weights(m):
-    if isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m, mode='fan_out', nonlinearity='relu')
-
-def get_scheduler(cfg, optimizer):
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 10, eta_min=1e-6)
-    scheduler = GradualWarmupSchedulerV2(
-        optimizer, multiplier=1.0, total_epoch=1, after_scheduler=scheduler_cosine)
-
-    return scheduler
-
-def scheduler_step(scheduler, avg_val_loss, epoch):
-    scheduler.step(epoch)
-
 from plmodel import *
-
 from argparse import ArgumentParser
 #from config import CFG
 
@@ -118,8 +100,10 @@ parser.add_argument('--val_size', type=int, default=224, required=False)
 parser.add_argument('--val_stride', type=int, default=112, required=False)
 parser.add_argument('--minbatches', type=int, default=1000000, required=False)
 parser.add_argument('--mode', type=str, default="normal", required=False)
+parser.add_argument('--seed', type=int, default=42, required=False)
 parser.add_argument('--scrollsval', type=str, default="1,2,3,4", required=False)
 parser.add_argument('--fragmentsval', type=str, default="20231012184423", required=False)
+parser.add_argument('--lr', type=float, default=2e-5, required=False)
 #parser.add_argument('--model', type=str, default="i3d", required=False)
 args = parser.parse_args()
 
@@ -131,6 +115,8 @@ CFG.train_batch_size = args.batch_size
 CFG.valid_tile_size = args.val_size
 CFG.valid_stride = args.val_stride
 CFG.valid_size = args.val_size # TODO: Allow different validation size from training size
+CFG.seed = args.seed
+CFG.lr = args.lr
 from dataloaders import *
 torch.set_float32_matmul_precision('medium')
 
@@ -254,7 +240,7 @@ if True: #for fid in fragments:
       print("pred_shape", scroll_id, pred_shape[scroll_id])
     '''
 
-    for randtrial in range(1000):
+    for randtrial in range(100):
       name = origname+"_"+str(randtrial)
       CFG.model_dir = os.path.join("outputs", name)
       CFG.seed = random.randint(0,10000000)
@@ -288,23 +274,42 @@ if True: #for fid in fragments:
       train_masks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
       train_noinkmasks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
       print("train_masks", train_masks.keys())
-      whichmask = train_masks[list(train_masks.keys())[random.randint(0,len(train_masks.keys()))]]
+      whichmaskcandidates = [t for t in list(train_masks.keys()) if train_masks[t] is not None and len(train_masks[t].shape)>=2]
+      whichmask = whichmaskcandidates[random.randint(0,len(whichmaskcandidates)-1)]
+      print("whichmask", whichmask)
       maskshape = train_masks[whichmask].shape
-      randinkwidth,randinkheight = random.randint(1, int(maskshape[1] * 0.10)), random.randint(1, int(maskshape[0]*0.9))
-      randink = random.randint(0,maskshape[0]-randinkheight-CFG.size),random.randint(0,maskshape[1]-randinkwidth-CFG.size)
-      randnoinkwidth,randnoinkheight = random.randint(1, int(maskshape[1] * 0.05)), random.randint(1, int(maskshape[0]*0.9))
-      randnoink = random.randint(0,maskshape[0]-randnoinkheight-CFG.size),random.randint(0,maskshape[1]-randnoinkwidth-CFG.size)
+      print("maskshape", maskshape)
+      randnoinkwidth,randnoinkheight = max(1,int(maskshape[1]*0.05)), int(maskshape[0]*0.67) #+1 -CFG.size #max(1,int(maskshape[0]*0.5-CFG.size/2)) #random.randint(1, max(1,int(maskshape[1] * 0.05))), random.randint(1, max(1,int(maskshape[0]*0.75)))
+      #randnoink = int(maskshape[0]*0.25), random.randint(0, max(1,maskshape[1]-randnoinkwidth-1-CFG.size)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
+      #randnoink = 0, random.randint(0, max(1,int(maskshape[1]*0.8)-1-CFG.size)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
+      randnoink = int(maskshape[0]*.33*.5), random.randint(0, max(1,int(maskshape[1]*0.8)-1)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
+      randink = randnoink[0],randnoinkwidth+randnoink[1] #random.randint(0,max(1,maskshape[0]-randinkheight-CFG.size)),random.randint(randnoink[1]+randnoinkwidth,maskshape[1]-CFG.size)
+      #randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]-CFG.size),randnoinkheight
+      randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]),randnoinkheight
+
+      #randnoink,randink = (randnoink[1],randnoink[0]), (randink[1],randink[0])
+
+      '''
+      randnoink = maskshape[0], maskshape[1]
+      while randnoink[1] >= maskshape[1]-1:
+        randnoinkwidth,randnoinkheight = random.randint(1, max(1,int(maskshape[1] * 0.05))), random.randint(1, max(1,int(maskshape[0]*0.75)))
+        randnoink = random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
+      randinkwidth,randinkheight = random.randint(1, max(1,int(maskshape[1] * 0.10))), random.randint(1, max(1,int(maskshape[0]*0.9)))
+      randink = random.randint(0,max(1,maskshape[0]-randinkheight-CFG.size)),random.randint(randnoink[1]+randnoinkwidth,maskshape[1]-CFG.size)
+      randinkwidth = min(randinkwidth, maskshape[1]-CFG.size)
+      '''
+
       # TODO: Set mask here and xyxys, THEN TRAIN!!!
       print(randtrial, "SethS train_masks shape, dtype", [(id,t.shape,t.dtype, t.min(), t.max(), t.mean(), t.std()) for (id,t) in train_masks.items()])
       print("SELECTED image for training", list(train_masks.keys())[0], "maskmax", maskmax)
-      print("randink", randink, "randnoink", randnoink)
+      print("randink", randink, randinkwidth, randinkheight, "randnoink", randnoink, randnoinkwidth, randnoinkheight)
       train_masks[whichmask][randink[0]:randink[0]+randinkheight, randink[1]:randink[1]+randinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
       train_noinkmasks[whichmask][randnoink[0]:randnoink[0]+randnoinkheight, randnoink[1]:randnoink[1]+randnoinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
-      trainlen=128000/(np.count_nonzero(train_masks[whichmask]) + np.count_nonzero(train_noinkmasks[whichmask])) #00
+      trainlen=int(1280000/(np.count_nonzero(train_masks[whichmask]) + np.count_nonzero(train_noinkmasks[whichmask]))) #00
       #train_xyxys = [(randink[1],randink[0],randink[1]+CFG.size,randink[0]+CFG.size),]*trainlen # TODO SethS should make training set bigger?
       #train_xyxys += [(randnoink[1],randnoink[0],randnoink[1]+CFG.size,randnoink[0]+CFG.size),]*trainlen # TODO SethS should make training set bigger?
-      train_xyxys = [(c[1], c[0], c[1]+size, c[0]+size) for c in np.argwhere(train_masks[whichmask] > 0).tolist()]*trainlen # TODO SethS should make training set bigger?
-      train_xyxys += [(c[1], c[0], c[1]+size, c[0]+size) for c in np.argwhere(train_noinkmasks[whichmask] > 0).tolist()]*trainlen # TODO SethS should make training set bigger?
+      train_xyxys = [(c[1], c[0], c[1]+CFG.size, c[0]+CFG.size) for c in np.argwhere(train_masks[whichmask] > 0).tolist()]*trainlen # TODO SethS should make training set bigger?
+      train_xyxys += [(c[1], c[0], c[1]+CFG.size, c[0]+CFG.size) for c in np.argwhere(train_noinkmasks[whichmask] > 0).tolist()]*trainlen # TODO SethS should make training set bigger?
       train_ids = [whichmask,] * len(train_xyxys)
       print("Len train_ids, xyxys:", len(train_ids), len(train_xyxys), set(train_ids), len(set(train_xyxys)), train_xyxys[:4])
       print("Len valid_ids, xyxys:", len(valid_ids), len(valid_xyxys), valid_xyxys[:3])

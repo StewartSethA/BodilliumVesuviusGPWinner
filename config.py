@@ -160,6 +160,7 @@ def make_dirs(cfg):
     for dir in [cfg.model_dir, cfg.figures_dir, cfg.submission_dir, cfg.log_dir]:
         os.makedirs(dir, exist_ok=True)
 def cfg_init(cfg, mode='train'):
+    print("config_init", cfg.seed)
     set_seed(cfg.seed)
     # set_env_name()
     # set_dataset_path(cfg)
