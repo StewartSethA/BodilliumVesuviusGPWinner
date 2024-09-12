@@ -245,7 +245,7 @@ class RegressionPLModel(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x,y,xyxys,ids= batch
         #print("validation step", batch_idx, "x", x.shape, "y", y.shape, "xyxys[0]", xyxys[0], "len", len(xyxys), "ids", ids[:5])
-        valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys()))))[:self.current_epoch]
+        valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys())))) #[:self.current_epoch*5]
         if len(valid_includes) == 0:
           #print(batch_idx, "Validation step: Nothing in valid includes!", valid_includes)
           return
@@ -333,7 +333,7 @@ class RegressionPLModel(pl.LightningModule):
         return {"loss": loss1}
     def on_validation_epoch_end(self):
         if self.trainer.is_global_zero:
-          valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys()))))[:self.current_epoch]
+          valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys())))) #[:self.current_epoch*5]
           print("Experiment name", self.name, "Included images on validation epoch end:", valid_includes)
           if len(valid_includes) == 0:
             return
@@ -350,10 +350,10 @@ class RegressionPLModel(pl.LightningModule):
                 print("Warning: included validation image has no nonzero predictions!", k, self.mask_pred[k].shape)
               continue
             #print("Writing image on validation epoch end", k, self.mask_count[k].sum(), "pred mean, std", self.mask_pred[k].mean(), self.mask_pred[k].std())
-            cv2.imwrite(self.model_name+"_"+self.name+"_"+sid+"_"+k+"_scale"+str(self.cfg.scale)+"_size"+str(self.cfg.size)+"_tile_size"+str(self.cfg.tile_size)+"_stride"+str(self.cfg.stride)+"_valstride"+str(self.cfg.valid_stride)+"_batch"+str(self.cfg.train_batch_size)+"_vbs"+str(self.cfg.valid_batch_size)+"_epoch"+str(self.current_epoch)+".jpg", np.clip(self.mask_pred[k],0,1)*255) 
             if self.mask_pred[k] is None or np.product(self.mask_pred[k].shape) == 0:
               print("No mask pred for key", k, self.mask_pred[k])
             else:
+              cv2.imwrite(self.model_name+"_"+self.name+"_"+sid+"_"+k+"_scale"+str(self.cfg.scale)+"_size"+str(self.cfg.size)+"_tile_size"+str(self.cfg.tile_size)+"_stride"+str(self.cfg.stride)+"_valstride"+str(self.cfg.valid_stride)+"_batch"+str(self.cfg.train_batch_size)+"_vbs"+str(self.cfg.valid_batch_size)+"_epoch"+str(self.current_epoch)+".jpg", np.clip(self.mask_pred[k],0,1)*255) 
               self.mask_pred[k][self.mask_pred[k]==0] = self.mask_pred[k].sum()/np.count_nonzero(self.mask_pred[k])
               self.wandb_logger.log_image(key=f"preds_{sid}_{k}", images=[np.clip(self.mask_pred[k],0,1)], caption=["probs"])
               self.writer.add_image(f'{sid}_{k}_preds', (self.mask_pred[k] - self.mask_pred[k].min()) / max(self.mask_pred[k].max()-self.mask_pred[k].min(), 0.01), self.current_epoch, dataformats="HW")

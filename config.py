@@ -72,7 +72,7 @@ class CFG:
     max_grad_norm = 100
 
     print_freq = 50
-    num_workers = 1
+    num_workers = 16
 
     seed = 0
 
@@ -108,7 +108,7 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
                 ], p=0.4),
-        # A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), # SethS 9/11/2024 TODO
         #A.CoarseDropout(max_holes=2, max_width=int(size * 0.2), max_height=int(size * 0.2), 
         #A.CoarseDropout(max_holes=2, max_width=int(size * 0.25), max_height=int(size * 0.25), 
         #                mask_fill_value=0, p=0.5),

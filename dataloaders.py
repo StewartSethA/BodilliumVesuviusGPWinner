@@ -459,7 +459,7 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
           for fragment_id in tqdm(fragment_ids):
             image = images[fragment_id]
             mask = masks[fragment_id]
-            pad0, pad1 = pads.get(fragment_id)
+            pad0, pad1 = pads.get(fragment_id, (0,0)) # Zeropad if not found
             _, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=is_valid)
             myscale = scale
             if fragment_id in ['20231215151901', '20231111135340', '20231122192640']: # TODO SethS need to add to this???
@@ -512,7 +512,7 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         #start_idx = len(fragment_ids) # WHY ????
         if fragment_id in train_images.keys():
           image, mask = train_images[fragment_id], train_masks[fragment_id]
-          pad0, pad1 = pads.get(fragment_id)
+          pad0, pad1 = pads.get(fragment_id, (0,0))
           _, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=is_valid)
         else:
           image, mask,fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, scale=myscale, force_mem=is_valid)

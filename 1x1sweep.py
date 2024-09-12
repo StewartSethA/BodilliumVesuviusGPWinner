@@ -276,16 +276,20 @@ if True: #for fid in fragments:
       print("train_masks", train_masks.keys())
       whichmaskcandidates = [t for t in list(train_masks.keys()) if train_masks[t] is not None and len(train_masks[t].shape)>=2]
       whichmask = whichmaskcandidates[random.randint(0,len(whichmaskcandidates)-1)]
+      whichmask = '20231215151901'
       print("whichmask", whichmask)
       maskshape = train_masks[whichmask].shape
       print("maskshape", maskshape)
-      randnoinkwidth,randnoinkheight = max(1,int(maskshape[1]*0.05)), int(maskshape[0]*0.67) #+1 -CFG.size #max(1,int(maskshape[0]*0.5-CFG.size/2)) #random.randint(1, max(1,int(maskshape[1] * 0.05))), random.randint(1, max(1,int(maskshape[0]*0.75)))
+      randnoinkwidth,randnoinkheight = 2,4 #max(1,int(maskshape[1]*0.05)), int(maskshape[0]*0.67) #+1 -CFG.size #max(1,int(maskshape[0]*0.5-CFG.size/2)) #random.randint(1, max(1,int(maskshape[1] * 0.05))), random.randint(1, max(1,int(maskshape[0]*0.75)))
       #randnoink = int(maskshape[0]*0.25), random.randint(0, max(1,maskshape[1]-randnoinkwidth-1-CFG.size)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
       #randnoink = 0, random.randint(0, max(1,int(maskshape[1]*0.8)-1-CFG.size)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
-      randnoink = int(maskshape[0]*.33*.5), random.randint(0, max(1,int(maskshape[1]*0.8)-1)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
-      randink = randnoink[0],randnoinkwidth+randnoink[1] #random.randint(0,max(1,maskshape[0]-randinkheight-CFG.size)),random.randint(randnoink[1]+randnoinkwidth,maskshape[1]-CFG.size)
+      randink = 0,randtrial
+      randinkwidth = 3
+      randinkheight = 4
+      randnoink = randink[0], randink[1]+randinkwidth #int(maskshape[0]*.33*.5), random.randint(0, max(1,int(maskshape[1]*0.8)-1)) #random.randint(0,max(1,int(maskshape[0]*0.95)-randnoinkheight-CFG.size)),random.randint(0,max(1,maskshape[1]-randnoinkwidth-CFG.size))
+      #randink = randnoink[0],randnoinkwidth+randnoink[1] #random.randint(0,max(1,maskshape[0]-randinkheight-CFG.size)),random.randint(randnoink[1]+randnoinkwidth,maskshape[1]-CFG.size)
       #randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]-CFG.size),randnoinkheight
-      randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]),randnoinkheight
+      #randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]),randnoinkheight
 
       #randnoink,randink = (randnoink[1],randnoink[0]), (randink[1],randink[0])
 
@@ -300,16 +304,27 @@ if True: #for fid in fragments:
       '''
 
       # TODO: Set mask here and xyxys, THEN TRAIN!!!
+      maskmax = 255
       print(randtrial, "SethS train_masks shape, dtype", [(id,t.shape,t.dtype, t.min(), t.max(), t.mean(), t.std()) for (id,t) in train_masks.items()])
       print("SELECTED image for training", list(train_masks.keys())[0], "maskmax", maskmax)
       print("randink", randink, randinkwidth, randinkheight, "randnoink", randnoink, randnoinkwidth, randnoinkheight)
+      if randnoink[1] + randnoinkwidth > maskshape[1]:
+        print("Reached end of image in sweep; stopping!")
+        break
       train_masks[whichmask][randink[0]:randink[0]+randinkheight, randink[1]:randink[1]+randinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
       train_noinkmasks[whichmask][randnoink[0]:randnoink[0]+randnoinkheight, randnoink[1]:randnoink[1]+randnoinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
 
       tmidx = np.zeros_like(train_masks[whichmask])
       tmnidx = np.zeros_like(train_masks[whichmask])
+
       #tmidx[randink[0]:randink[0]+randinkheight-CFG.size, randink[1]:randink[1]+randinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
-      tmidx[randink[0]:randnoink[0]+randnoinkheight-CFG.size, randink[1]:randnoink[1]+randnoinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
+      #tmidx[randink[0]:randnoink[0]+randnoinkheight-CFG.size, randink[1]:randnoink[1]+randnoinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
+      wholeregion = wr = min(randink[0], randnoink[0]),max(randink[0]+randinkheight, randnoink[0]+randnoinkheight), min(randink[1],randnoink[1]), max(randink[1]+randinkwidth, randnoink[1]+randnoinkwidth)
+      #tmidx[randink[0]:randink[0]+randnoinkheight-CFG.size, randink[1]:randnoink[1]+randnoinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
+      tmidx[wr[0]:wr[1]-CFG.size+1, wr[2]:wr[3]-CFG.size+1] = maskmax
+
+      #tmidx[randink[0]:randink[0]+randinkheight-CFG.size, randink[1]:randink[1]+randinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
+      #tmidx[randink[0]:randnoink[0]+randnoinkheight-CFG.size, randink[1]:randnoink[1]+randnoinkwidth-CFG.size] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
 
       print("tmidx", randink[0],randink[0]+randinkheight-CFG.size, "x:x+w", randink[1],randink[1]+randinkwidth-CFG.size, "max", maskmax) #1.0 # TODO: Make larger rectangular area, includi>
       #train_masks[whichmask][randink[0]:randink[0]+randinkheight, randink[1]:randink[1]+randinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
@@ -317,7 +332,7 @@ if True: #for fid in fragments:
       #tmnidx[randnoink[0]:randnoink[0]+randnoinkheight-CFG.size, randnoink[1]:randnoink[1]+randnoinkwidth] = maskmax #1.0 # TODO: Make larger rectangular area, including for noink!
       #trainlen=int(1280000/(np.count_nonzero(train_masks[whichmask]) + np.count_nonzero(train_noinkmasks[whichmask]))) #00
       print("ink samples", np.count_nonzero(tmidx), "non-ink samples", np.count_nonzero(tmnidx)) #00
-      trainlen=int(2560000/(np.count_nonzero(tmidx) + np.count_nonzero(tmnidx)))
+      trainlen=int(256000/(np.count_nonzero(tmidx) + np.count_nonzero(tmnidx)))
 
       #trainlen=int(1280000/(np.count_nonzero(train_masks[whichmask]) + np.count_nonzero(train_noinkmasks[whichmask]))) #00
 
