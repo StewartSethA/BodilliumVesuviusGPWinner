@@ -10,6 +10,9 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import numpy as np
+from functools import partial
+np_load_old = partial(np.load)
+np.load = lambda *a, **k: np_load_old(*a, allow_pickle=True, **k)
 import random
 import cv2
 from scipy import ndimage
@@ -21,6 +24,7 @@ from albumentations.pytorch import ToTensorV2
 import time
 import json
 import zarr
+from collections import defaultdict
 from termcolor import colored
 class bcolors:
     HEADER = '\033[95m'
@@ -33,17 +37,29 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+# Wrap .zarr array access for interchangeability with .npy arrays
 class ZarrArrayWrapper:
   def __init__(self, array):
     self.array = array
   def __getitem__(self, slice):
-    #print("getting from zarr array wrapper", self.shape, "slice:", slice)
     return self.array[(slice[2], slice[0], slice[1])].transpose(1,2,0)
   @property
   def shape(self):
     return self.array.shape[1:] + self.array.shape[0:1]
 
-def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_only=False, pad0=0, pad1=0, scale=1, chunksize=128, force_mem=False):
+def read_image_stack(fragment_id,start_depth=15,end_depth=45,CFG=None,scales=[1,2,4,8,16,32,64,128,256,512,1024],npyminscale=8,chunksize=128):
+  basepath = CFG.basepath
+  print(bcolors.OKBLUE, end="")
+  images = {} # Scale-indexed set of image stacks
+  zarr_path = f"{basepath}/{fragment_id}_{chunksize}.zarr"
+  if os.path.exists(zarr_path):
+    print("Loading", zarr_path, end=" ")
+    multiresolution_array = zarr.open(zarr_path)
+    for s in [0,1,2,3,4,5,6,7,8,9]:
+      if s in multiresolution_array.keys():
+        images[2**s] = multiresolution_array[s]
+
+def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_only=False, pad0=0, pad1=0, scale=1, chunksize=128, force_mem=False, scales=[1,2,4,8,16,32,64,128,256,512]):
   basepath = CFG.basepath
   scrollsdir = "train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
   images = None
@@ -310,7 +326,7 @@ def reload_validationset():
 #@jit(nopython=True)
 import numpy as np
 def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False, scale=1, CFG=None):
-        print(bcolors.OKGREEN, "Gen xyxys", fragment_id, image.shape, mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid, bcolors.ENDC, end=" ")
+        print(bcolors.OKGREEN, "Gen xyxys", fragment_id, "image shape", image.shape, "mask shape", mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid, bcolors.ENDC, end=" ")
         if not is_valid:
           noink = os.path.join(CFG.basepath, fragment_id + "_noink.png")
           if os.path.isfile(noink):
@@ -340,12 +356,15 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
           #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(fragment_mask[:,:] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < fragment_mask.shape[0] and c[1]+tile_size < fragment_mask.shape[1]] #[::int(stride)]
           xyxys = [(c[1]*stride,c[0]*stride,c[1]*stride+size,c[0]*stride+size) for c in np.argwhere(fragment_mask[::stride,::stride] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]*stride+tile_size < h and c[1]*stride+tile_size < w] #[::int(stride)]
           ids = [fragment_id] * len(xyxys)
-          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], bcolors.ENDC, end=" ") #, "validation", stride, fragment_mask.shape)
+          #print("xyxys", len(xyxys), "ids", len(ids))
+          expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
+          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, "ids", len(ids), bcolors.ENDC, end=" ") #, "validation", stride, fragment_mask.shape)
           return xyxys, ids
         if not is_valid: # Added 4/29 SethS
           #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(noink[:,:,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < mask.shape[0] and c[1]+tile_size < mask.shape[1]] #[::int(stride)]
           xyxys = [(c[1]*stride,c[0]*stride,c[1]*stride+size,c[0]*stride+size) for c in np.argwhere(noink[::stride,::stride,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]*stride+tile_size < h and c[1]*stride+tile_size < w] #[::int(stride)]
-          print(bcolors.OKCYAN, "len xyxys", len(xyxys), bcolors.ENDC, end=" ") #, "training", stride, fragment_mask.shape)
+          expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
+          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, bcolors.ENDC, end=" ") #, "training", stride, fragment_mask.shape)
           ids = [fragment_id] * len(xyxys)
           return xyxys, ids
 
@@ -605,6 +624,10 @@ def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_i
       print("VALID xy sizes", xysizes)
       print("VALID total image size", sum(imsizes)/1e9, "GB")
       print("VALID total xy size", sum(xysizes))
+      valid_xyxys_by_segment_id = defaultdict(list)
+      for i,vid in enumerate(valid_ids):
+        valid_xyxys_by_segment_id[vid].append(valid_xyxys[i])
+      print("VALID xy size", xysizes, "per segment", {k:len(valid_xyxys_by_segment_id[k]) for k in valid_xyxys_by_segment_id.keys()}) # Count per set
       t = time.time()-t
       print("Total time taken to load validation images:", t, "seconds, GB/s:", sum(imsizes)/1e9 / t)
     return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
@@ -618,7 +641,7 @@ def get_transforms(data, cfg):
     return aug
 
 class CustomDataset(Dataset):
-    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None, is_valid=False, randomize=False, scale=1, labelscale=4):
+    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None, is_valid=False, randomize=False, scale=1, labelscale=4, scales=[1,2,4,8,16,32,64,128,256,512]):
         self.images = images
         self.cfg = cfg
         self.labels = labels
@@ -634,6 +657,7 @@ class CustomDataset(Dataset):
         self.is_valid = is_valid
         self.randomize = randomize
         self.labelscale = labelscale
+        self.scales = scales
     def __len__(self):
         return len(self.xyxys)
     def cubeTranslate(self,y):
@@ -846,6 +870,7 @@ id2scroll.update({v:"2" for v in scroll2_ids})
 id2scroll.update({v:"3" for v in scroll3_ids})
 id2scroll.update({v:"4" for v in scroll4_ids})
 
+# THIS IS NEEDED!!!
 def custom_collate_fn(data): #images=None, labels=None, xys=None, ids=None):
   #print(data)
   images = [d[0] for d in data]
