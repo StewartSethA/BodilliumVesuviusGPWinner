@@ -88,6 +88,7 @@ class RegressionPLModel(pl.LightningModule):
             #print("Initializing mask pred and count", k, pred_shape)
             self.mask_pred[k] = np.zeros(pred_shape)
             self.mask_count[k] = np.zeros(pred_shape)
+        self.predct=0
         #else:
         #  self.mask_pred = np.zeros(self.hparams.pred_shape)
         #  self.mask_count = np.zeros(self.hparams.pred_shape)
@@ -189,6 +190,7 @@ class RegressionPLModel(pl.LightningModule):
           return pred_mask
     def training_step(self, batch, batch_idx):
         x, y, xys, ids = batch
+        print("training step", x.shape, y.shape, "xyxys[:3]", xys[:3], len(xys), "ids", ids[:3], len(ids))
         #if batch_idx > 100:
         #  return {"loss": None} #torch.zeros_like(x)[0,0,0,0,0]}
         #print("training input.shape", x.shape, "y.shape", y.shape, "xys", xys, "len(xys)", len(xys)) # xys look wrong. batched incorrectly. list of 4 elements of 12 when batch is 12 and there should be 4 elements per xy.
@@ -244,6 +246,7 @@ class RegressionPLModel(pl.LightningModule):
         return {"loss": loss1}
     def validation_step(self, batch, batch_idx):
         x,y,xyxys,ids= batch
+        print("validation step", x.shape, y.shape, "xyxys[:3]", xyxys[:3], len(xyxys), "ids", ids[:3], len(ids))
         #print("validation step", batch_idx, "x", x.shape, "y", y.shape, "xyxys[0]", xyxys[0], "len", len(xyxys), "ids", ids[:5])
         valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys())))) #[:self.current_epoch*5]
         if len(valid_includes) == 0:
@@ -311,6 +314,7 @@ class RegressionPLModel(pl.LightningModule):
               #self.mask_pred[ids[i]][y1:y2, x1:x2] += F.interpolate(y_preds[i].unsqueeze(0).float(),(y2-y1,x2-x1),mode='bilinear').squeeze(0).squeeze(0).numpy() # It has to be squashed DOWN, not upsampled. Same sampling algorithm problems I used to run into!!! # USE bilinear for downsampling!!!
               # TODO SethS 7/30 commented the above!
               self.mask_pred[ids[i]][y1:y2, x1:x2] += y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy() # It has to be squashed DOWN, not upsampled. Same sampling algorithm problems I used to run into!!! # USE bilinear for downsampling!!!
+              self.predct+=1
             else:
               #self.mask_pred[ids[i]][y1:y2, x1:x2] += np.clip(y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy(), 0, 1) # TODO: What if I don't apply np.clip while summing, but only AFTER???
               self.mask_pred[ids[i]][y1:y2, x1:x2] += y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy() # TODO: What if I don't apply np.clip while summing, but only AFTER???
@@ -332,6 +336,13 @@ class RegressionPLModel(pl.LightningModule):
           self.writer.add_scalar("loss/valid", loss1, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
         return {"loss": loss1}
     def on_validation_epoch_end(self):
+        print("predcount", self.predct)
+        print("GATHERED predcount", self.all_gather(self.predct))
+        
+        for k in self.mask_pred.keys():
+          self.mask_pred[k] = self.all_gather(self.mask_pred[k]).sum(0).detach().cpu().numpy()
+          self.mask_count[k] = self.all_gather(self.mask_count[k]).sum(0).detach().cpu().numpy()
+        
         if self.trainer.is_global_zero:
           valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys())))) #[:self.current_epoch*5]
           print("Experiment name", self.name, "Included images on validation epoch end:", valid_includes)
@@ -345,6 +356,9 @@ class RegressionPLModel(pl.LightningModule):
             sid = id2scroll[k]
             pred_shape = pred_mask.shape[:2]
             self.mask_pred[k] = np.divide(self.mask_pred[k], self.mask_count[k], out=np.zeros_like(self.mask_pred[k]), where=self.mask_count[k]!=0)
+            maskct = self.mask_count[k].sum()/(self.cfg.valid_size*self.cfg.valid_size)
+            masksz = self.mask_count[k].shape[0]*self.mask_count[k].shape[1]
+            print("Total samples obtained from", k, maskct, "mask size", masksz, "density", maskct/masksz, "stride-adjusted density", maskct*(self.cfg.valid_stride*self.cfg.valid_stride)/(masksz))
             if self.mask_pred[k].std() == 0 or self.mask_count[k].sum() == 0:
               if k in valid_includes:
                 print("Warning: included validation image has no nonzero predictions!", k, self.mask_pred[k].shape)
@@ -385,6 +399,7 @@ class RegressionPLModel(pl.LightningModule):
           pred_shape = pred_mask.shape[:2]
           self.mask_pred[k] = np.zeros(pred_shape)
           self.mask_count[k] = np.zeros(pred_shape)
+        self.predct = 0
         '''
         if isinstance(self.hparams.pred_shape, dict):
           self.mask_pred = {}
