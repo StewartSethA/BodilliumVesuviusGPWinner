@@ -240,19 +240,23 @@ if True: #for fid in fragments:
       print("pred shape for scroll", scroll_id, pred_shape[scroll_id])
       print("pred_shape", scroll_id, pred_shape[scroll_id])
     '''
-
+    from pytorch_lightning.callbacks import Callback
+    class StopCallback(Callback):
+     def on_epoch_end(self, args, state, control, logs=None, **kwargs):
+       control.should_training_stop = True
     for randtrial in [0,]: #range(100):
       name = origname+"_"+str(randtrial)
+      print("EXPERIMENT NAME", name)
       CFG.model_dir = os.path.join("outputs", name)
       CFG.seed = random.randint(0,10000000)
       cfg_init(CFG)
       run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
-      wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
+      #wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
       trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="gpu",
         devices=torch.cuda.device_count(),
-        logger=wandb_logger,
+        logger=None, #wandb_logger,
         default_root_dir='./', #"/content/gdrive/MyDrive/vesuvius_model/training/outputs",
         accumulate_grad_batches=1,
         #auto_scale_batch_size='binsearch',
@@ -260,7 +264,7 @@ if True: #for fid in fragments:
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
         strategy='ddp', #_find_unused_parameters_true',
-        callbacks=[ModelCheckpoint(filename=f'{args.model}_{fid}_{enc}_{name}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=1),],
+        callbacks=[StopCallback(), ModelCheckpoint(filename=f'{args.model}_{fid}_{enc}_{name}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=1),],
                     #StochasticWeightAveraging(2e-5, annealing_epochs=5, device=None)],
       )
       if randtrial == 0:
@@ -405,14 +409,76 @@ if True: #for fid in fragments:
       #model.train_dataloaders = train_loader
       #model.valid_dataloaders = valid_loader
       #print('FOLD : ',fold)
-      wandb_logger.watch(model, log="all", log_freq=100)
+      #wandb_logger.watch(model, log="all", log_freq=100)
+
       multiplicative = lambda epoch: 0.9
       model.valid_dataloader = valid_loader
       model.training_dataloader = train_loader
       #print("Creating trainer")
       #tuner = pl.tuner.Tuner(trainer)
       #tuner.scale_batch_size(model, mode='binsearch')
-      #print("Beginning training")
+      '''
+      for batch_size in [16384, 12228, 8192, 6144, 4096, 3072, 2048, 1536, 1024, 768, 512, 384, 256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4, 3, 2, 1]:
+        print("Trying batch size", batch_size)
+        train_dataset = CustomDataset(
+          train_images1, CFG, labels=train_masks1, xyxys=train_xyxys1[:batch_size*3], ids=train_ids1[:batch_size*3], transform=get_transforms(data='train', cfg=CFG))
+        valid_dataset = CustomDatasetTest(
+          valid_images, CFG,xyxys=valid_xyxys[:batch_size*3], labels=valid_masks, ids=valid_ids[:batch_size*3], transform=get_transforms(data='valid', cfg=CFG))
+        train_loader = DataLoader(train_dataset,
+                                batch_size=batch_size,
+                                shuffle=True,
+                                num_workers=CFG.num_workers, pin_memory=True, drop_last=True, collate_fn=custom_collate_fn
+                                )
+        valid_loader = DataLoader(valid_dataset,
+                                batch_size=batch_size,
+                                shuffle=False,
+                                num_workers=CFG.num_workers, pin_memory=True, drop_last=True, collate_fn=custom_collate_fn)
+        try:
+          #trainer.max_epochs = 1
+          trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader) #, auto_scale_batch_size='binsearch')
+          print("FOUND BATCH SIZE:", batch_size)
+          #trainer.max_epochs = args.epochs
+          break
+        except torch.cuda.OutOfMemoryError as ex:
+          print("Reducing batch size!", ex, batch_size)
+        train_dataset = CustomDataset(
+          train_images1, CFG, labels=train_masks1, xyxys=train_xyxys1, ids=train_ids1, transform=get_transforms(data='train', cfg=CFG))
+        valid_dataset = CustomDatasetTest(
+          valid_images, CFG,xyxys=valid_xyxys, labels=valid_masks, ids=valid_ids, transform=get_transforms(data='valid', cfg=CFG))
+        train_loader = DataLoader(train_dataset,
+                                batch_size=batch_size,
+                                shuffle=True,
+                                num_workers=CFG.num_workers, pin_memory=True, drop_last=True, collate_fn=custom_collate_fn
+                                )
+        valid_loader = DataLoader(valid_dataset,
+                                batch_size=batch_size,
+                                shuffle=False,
+                                num_workers=CFG.num_workers, pin_memory=True, drop_last=True, collate_fn=custom_collate_fn)
+      print("USING BATCH SIZE", batch_size)
+      exit()
+
+      origname = f'{args.model}_scale{CFG.scale}_size{CFG.size}_tilesize{CFG.tile_size}_stride{CFG.stride}val{CFG.valid_stride}_autobatch{batch_size}_{args.name}'
+      run_slug = name = origname+"_"+str(randtrial)
+      wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
+      wandb_logger.watch(model, log="all", log_freq=100)
+      trainer = pl.Trainer(
+        max_epochs=args.epochs,
+        accelerator="gpu",
+        devices=torch.cuda.device_count(),
+        logger=wandb_logger,
+        default_root_dir='./', #"/content/gdrive/MyDrive/vesuvius_model/training/outputs",
+        accumulate_grad_batches=1,
+        #auto_scale_batch_size='binsearch',
+        precision='16-mixed',
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
+        strategy='ddp', #_find_unused_parameters_true',
+        callbacks=[ModelCheckpoint(filename=f'{args.model}_{fid}_{enc}_{name}_scale{CFG.scale}_size{CFG.size}_stride{CFG.stride}',dirpath=CFG.model_dir,monitor='train/total_loss',mode='min',save_top_k=1),],
+                    #StochasticWeightAveraging(2e-5, annealing_epochs=5, device=None)],
+      )
+      '''
+      print("Beginning training")
+      
       trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader) #, auto_scale_batch_size='binsearch')
 
       wandb.finish()
