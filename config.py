@@ -102,13 +102,14 @@ class CFG:
         # A.RandomRotate90(p=0.6),
 
         A.RandomBrightnessContrast(p=0.75),
+        A.Equalize(p=0.5), # SethS 9/12/2024
         A.ShiftScaleRotate(rotate_limit=360,shift_limit=0.15,scale_limit=0.01,p=0.75),
         A.OneOf([
                 A.GaussNoise(var_limit=[10, 50]),
                 A.GaussianBlur(),
                 A.MotionBlur(),
                 ], p=0.4),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), # SethS 9/11/2024 TODO
+        #A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), # SethS 9/11/2024 TODO # Disabled 9/25/2024
         #A.CoarseDropout(max_holes=2, max_width=int(size * 0.2), max_height=int(size * 0.2), 
         #A.CoarseDropout(max_holes=2, max_width=int(size * 0.25), max_height=int(size * 0.25), 
         #                mask_fill_value=0, p=0.5),
