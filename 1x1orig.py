@@ -10,10 +10,8 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
-from pytorch_lightning.loggers import WandbLogger
 import random
 import numpy as np
-import wandb
 import cv2
 from tqdm.auto import tqdm
 import argparse
@@ -102,7 +100,9 @@ parser.add_argument('--minbatches', type=int, default=1000000, required=False)
 parser.add_argument('--mode', type=str, default="normal", required=False)
 parser.add_argument('--seed', type=int, default=42, required=False)
 parser.add_argument('--scrollsval', type=str, default="1,2,3,4", required=False)
-parser.add_argument('--fragmentsval', type=str, default="20231012184423", required=False)
+#parser.add_argument('--fragmentsval', type=str, default="20231012184423", required=False)
+#parser.add_argument('--fragmentsval', type=str, default="20231012184423,20231007101619,20230929220926,20231005123336,20231022170901", required=False)
+parser.add_argument('--fragmentsval', type=str, default="20231005123336,20231022170901", required=False)
 parser.add_argument('--lr', type=float, default=2e-5, required=False)
 #parser.add_argument('--model', type=str, default="i3d", required=False)
 args = parser.parse_args()
@@ -147,7 +147,7 @@ class bcolors:
 enc_i,enc,fold=0,'i3d',0
 fid = CFG.valid_id
 
-name = f'{args.model}_scale{CFG.scale}_size{CFG.size}_tilesize{CFG.tile_size}_stride{CFG.stride}val{CFG.valid_stride}_batch{args.batch_size}_{args.name}'
+name = f'{args.model}_sc{CFG.scale}_sz{CFG.size}_st{CFG.stride}v{CFG.valid_stride}_bs{args.batch_size}_{args.name}'
 origname = name
 #exit()
 CFG.model_dir = os.path.join("outputs", name)
@@ -223,7 +223,8 @@ if True: #for fid in fragments:
     #valid_ids = list(set(scroll4_ids + scroll3_ids + scroll2_ids + scroll1val + fragments)) #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #train_ids = scroll1_ids + list((set(fragments) - set(valid_ids)) - set(scroll1val)) + ["20240304144031", "20231210132040", "20231215151901", "20231122192640", "20231111135340", "20240304161941", "20240304141531"] #+ set( #scroll4_ids) 
     train_ids = scroll4_ids + scroll1_ids
-
+    train_ids = [id for id in train_ids if id not in scroll1val]
+    print("train_ids", train_ids)
     '''
     for scroll_id in set(valid_ids + train_ids): #fragments + scroll4_ids + scroll2_ids + scroll3_ids:
       valid_mask_gt = cv2.imread(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png", 0)
@@ -251,7 +252,10 @@ if True: #for fid in fragments:
       CFG.seed = random.randint(0,10000000)
       cfg_init(CFG)
       run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
-      #wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
+      from pytorch_lightning.loggers import WandbLogger
+      import wandb
+
+      wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
       trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="gpu",
@@ -269,19 +273,22 @@ if True: #for fid in fragments:
       )
       if randtrial == 0:
         train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale, is_main=trainer.is_global_zero)
-        train_images1, train_masks1 = ({k:v for k,v in t.items() if k in scroll1_ids} for t in [train_images, train_masks])
+        train_ids, train_xyxys = [id for id in train_ids if id not in scroll1val], [train_xyxys[t] for t,v in enumerate(train_ids) if v not in scroll1val]
+        #print("FINAL SET of train_ids", set(train_ids))
+        train_images1, train_masks1 = ({k:v for k,v in t.items() if k in scroll1_ids and k not in scroll1val} for t in [train_images, train_masks])
         train_xyxys1 = [d for t,d in enumerate(train_xyxys) if train_ids[t] in scroll1_ids]
         train_ids1 = [d for d in train_ids if d in scroll1_ids]
       if trainer.is_global_zero:
         print(bcolors.OKGREEN, "train_ids", len(train_ids), set(train_ids), bcolors.ENDC)
         print(bcolors.OKBLUE, "valid_ids", len(valid_ids), set(valid_ids), bcolors.ENDC)
+        print("Final set of train_image keys", train_images1.keys())
       if trainer.is_global_zero:
         print(bcolors.OKGREEN, "fragments", set(fragments), "(from dataloaders import *)", bcolors.ENDC)
-
       maskmax = max([t.max() for t in train_masks.values() if t is not None])
       train_masks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
       train_noinkmasks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
       print("train_masks", train_masks.keys())
+
       whichmaskcandidates = [t for t in list(train_masks.keys()) if train_masks[t] is not None and len(train_masks[t].shape)>=2]
       whichmask = whichmaskcandidates[random.randint(0,len(whichmaskcandidates)-1)]
       whichmask = '20231215151901'
@@ -352,7 +359,7 @@ if True: #for fid in fragments:
       print("Len train_ids, xyxys:", len(train_ids), len(train_xyxys), set(train_ids), len(set(train_xyxys)), train_xyxys[:4])
       print("Len valid_ids, xyxys:", len(valid_ids), len(valid_xyxys), valid_xyxys[:3])
       #print("Got all validation scroll ID shapes for prediction and logging")
-      wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
+      #wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
       multiplicative = lambda epoch: 0.9
       #train_xyxys, train_ids = train_xyxys[:100000], train_ids[:100000]
       #train_xyxys, train_ids = train_xyxys[:100000], train_ids[:100000]
@@ -368,9 +375,16 @@ if True: #for fid in fragments:
       #train_ids1 = train_ids1 + train_ids
 
       print("TRAIN SAMPLES:", len(train_ids))
-      if len(train_ids1) < CFG.train_batch_size * 8:
-        train_ids1 = train_ids1 * int(CFG.train_batch_size * 8 * 10 / len(train_ids))
-        train_xyxys1 = train_xyxys1 * int(CFG.train_batch_size * 8 * 10 / len(train_ids))
+      sizemult = 50
+      if args.model == "unet":
+        sizemult = 1000
+      print("train item size", len(train_ids1))
+      if len(train_ids1) < CFG.train_batch_size * 8 * sizemult:
+        multiplier = int(CFG.train_batch_size * 8 * sizemult / len(train_ids1))
+        print("Train size multiplier", multiplier)
+        train_ids1 = train_ids1 * multiplier
+        train_xyxys1 = train_xyxys1 * multiplier
+      print("NEW train item size", len(train_ids1))
 
       train_dataset = CustomDataset(
         train_images1, CFG, labels=train_masks1, xyxys=train_xyxys1, ids=train_ids1, transform=get_transforms(data='train', cfg=CFG))
@@ -402,7 +416,8 @@ if True: #for fid in fragments:
       '''
       #model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity)
       #print("Creating model")
-      model = RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG, is_main=trainer.is_global_zero, train_masks=train_masks, train_noinkmasks = train_noinkmasks)
+      #wandb_logger = None
+      model = RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG, is_main=trainer.is_global_zero, train_masks=train_masks, train_noinkmasks = train_noinkmasks, val_metric_ids = scroll1val)
       if len(args.load) > 0:
         #model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", pred_shape=pred_shape, size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity)
         model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG)
