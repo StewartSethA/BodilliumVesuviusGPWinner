@@ -17,8 +17,11 @@ PIL.Image.MAX_IMAGE_PIXELS = 933120000
 from torch.utils.tensorboard import SummaryWriter
 torch.set_float32_matmul_precision('medium')
 #from config import CFG
+from unet import UNet
 
 from dataloaders import id2scroll
+def mean(x):
+  return sum(x) / max(1, len(x))
 
 # from resnetall import generate_model
 def init_weights(m):
@@ -63,7 +66,7 @@ class Decoder(nn.Module):
 
 class RegressionPLModel(pl.LightningModule):
     #def __init__(self,pred_shape,size=256,enc='',with_norm=False,total_steps=500, train_dataset=None, check_val_every_n_epoch=1, backbone=None, wandb_logger=None, val_masks=None,name="", complexity=16):
-    def __init__(self,pred_shape=None,size=256,enc='',with_norm=False,total_steps=500, train_dataset=None, check_val_every_n_epoch=1, backbone=None, wandb_logger=None, val_masks=None,name="", complexity=16, train_loader=None, valid_loader=None, cfg=None, is_main=False, train_masks=None, train_noinkmasks=None):
+    def __init__(self,pred_shape=None,size=256,enc='',with_norm=False,total_steps=500, train_dataset=None, check_val_every_n_epoch=1, backbone=None, wandb_logger=None, val_masks=None,name="", complexity=16, train_loader=None, valid_loader=None, cfg=None, is_main=False, train_masks=None, train_noinkmasks=None, val_metric_ids=[]):
         super(RegressionPLModel, self).__init__()
         self.cfg = cfg
         self.is_main = is_main
@@ -78,6 +81,9 @@ class RegressionPLModel(pl.LightningModule):
         self.valid_loader = self.valid_dataloaders = valid_loader
         self.train_loader = self.train_dataloaders = train_loader
         self.wandb_logger = wandb_logger
+        self.val_metric_ids = val_metric_ids
+        self.losses = defaultdict(list)
+        self.val_losses = defaultdict(list)
         #if isinstance(self.hparams.pred_shape, dict):
         if True:
           self.mask_pred = {}
@@ -140,6 +146,10 @@ class RegressionPLModel(pl.LightningModule):
             from i3dallnl import InceptionI3d
             self.InceptionI3d = InceptionI3d
             self.backbone=InceptionI3d(in_channels=1,num_classes=512,non_local=True)
+        elif "unet" in backbone.lower():
+            from pygo1x1 import InceptionI3d
+            self.InceptionI3d = InceptionI3d
+            self.backbone = UNet(complexity=complexity) # Default complexity is 64
         else:
             self.backbone = backbone
         if "1x1" in backbone.lower():
@@ -149,8 +159,10 @@ class RegressionPLModel(pl.LightningModule):
           if self.is_main:
             print("Backbone outputs", [x.shape for x in xs])
           self.decoder = Decoder(encoder_dims=[x.size(1) for x in xs], upscale=4) # Do it right to compensate for downsampling!!
-        else:
+        elif "unet" not in backbone.lower():
           self.decoder = Decoder(encoder_dims=[x.size(1) for x in self.backbone(torch.rand(1,1,30,4,4))], upscale=4) # Do it right to compensate for downsampling!!
+        else:
+          self.decoder = None # Decoder(encoder_dims=[x.size(1) for x in self.backbone(torch.rand(1,1,30,64,64))], upscale=4) # Do it right to compensate for downsampling!!
 
         if self.hparams.with_norm:
             self.normalization=nn.BatchNorm3d(num_features=1)
@@ -169,10 +181,15 @@ class RegressionPLModel(pl.LightningModule):
               print("self.normalization", x.shape)
             x=self.normalization(x) # WHAT DOES THIS DO??? BATCH NORM ON INFERENCE TOO?
         if not isinstance(self.backbone, self.InceptionI3d):
-          x = self.backbone(torch.permute(x, (0, 2, 1,3,4)))
-          if self.is_main:
-            print("NonI3D Output", x.shape)
-          x=x.view(-1,1,4,4) # Ooh, ouch!! WHY?? DROPPING INFO???
+          from unet import UNet
+          if isinstance(self.backbone, UNet):
+            x = self.backbone(x)
+          else:
+            x = self.backbone(torch.permute(x, (0, 2, 1,3,4)))
+            x=x.view(-1,1,4,4) # Ooh, ouch!! WHY?? DROPPING INFO???
+          #print("SethS NonI3d model")
+          #if self.is_main:
+          #  print("NonI3D Output", x.shape)
           return x
         else:
           feat_maps = self.backbone(x)
@@ -190,7 +207,6 @@ class RegressionPLModel(pl.LightningModule):
           return pred_mask
     def training_step(self, batch, batch_idx):
         x, y, xys, ids = batch
-        print("training step", x.shape, y.shape, "xyxys[:3]", xys[:3], len(xys), "ids", ids[:3], len(ids))
         #if batch_idx > 100:
         #  return {"loss": None} #torch.zeros_like(x)[0,0,0,0,0]}
         #print("training input.shape", x.shape, "y.shape", y.shape, "xys", xys, "len(xys)", len(xys)) # xys look wrong. batched incorrectly. list of 4 elements of 12 when batch is 12 and there should be 4 elements per xy.
@@ -199,7 +215,7 @@ class RegressionPLModel(pl.LightningModule):
         except Exception as ex:
           print("Exception: training input.shape", x.shape, "y.shape", y.shape, "xys", xys, file=sys.stderr)
           raise(ex)
-        if batch_idx % 100 == 0 and self.trainer.is_global_zero:
+        if batch_idx % 500 == 0 and self.trainer.is_global_zero:
           self.writer.add_image("pred_mask/train", torchvision.utils.make_grid(outputs, nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
           self.writer.add_image("true_mask/train", torchvision.utils.make_grid(y, nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
           self.writer.add_image("inputsdepthslice/train", torchvision.utils.make_grid(x.mean(dim=3), nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
@@ -212,7 +228,8 @@ class RegressionPLModel(pl.LightningModule):
         #      print("Skipping misshapen xyxys!",x1,y1,x2,y2)
         #      continue
         #x2,y2 = x1+self.cfg.size, y1+self.cfg.size
-        if batch_idx % 500 == 0 and self.trainer.is_global_zero:
+        if batch_idx % 100 == 0 and self.trainer.is_global_zero:
+          print("training step", x.shape, y.shape, "xyxys[:3]", xys[:3], len(xys), "ids", ids[:3], len(ids))
           print("x.shape", x.shape, "y.shape", y.shape, "outputs.shape", outputs.shape, "y.stats", y.min(), y.max(), y.mean(), y.std(), "out.stats", outputs.min(), outputs.max(), outputs.mean(), outputs.std(), "xys", len(xys), xys[:3])
 
         if y.shape != outputs.shape:
@@ -222,31 +239,45 @@ class RegressionPLModel(pl.LightningModule):
           #y=F.interpolate(y,outputs.shape[-2:], mode="area") # TODO SethS: DISABLE ME!
         #y = F.interpolate(y, (1,1), mode="area")
         #outputs = F.interpolate(outputs, (1,1), mode="area")
+        #valid_idxs = [i for i in range(outputs.shape[0]) if ids[i] in self.val_metric_ids]
         mseloss = ((outputs - y) ** 2).mean()
-        loss1 = self.loss_func(outputs, y) + mseloss
+        loss1 = self.loss_func(outputs, y) #+ mseloss
         #if batch_idx % 250 == 0:
         #  print("outputs min, max", outputs.min().item(), outputs.max().item(), "y min, max", y.min().item(), y.max().item(), "loss:", loss1.item())
         if torch.isnan(loss1):
             print("Loss nan encountered")
         self.log("train/total_loss", loss1.item(),on_step=True, on_epoch=True, prog_bar=True)
-        if self.trainer.is_global_zero:
-          self.writer.add_scalar('Loss/train', loss1.item(), self.current_epoch)
-          self.writer.add_scalar('output/min', outputs.min().item(), self.current_epoch)
-          self.writer.add_scalar('output/max', outputs.max().item(), self.current_epoch)
-          diceloss = self.loss_func1(outputs, y)
-          bceloss = self.loss_func2(outputs, y)
-          loss1 = self.loss_func(outputs, y)
-          madloss = torch.abs(outputs - y).mean()
-          self.writer.add_scalar("loss_mse/train", mseloss, self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_mad/train", madloss, self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_bce/train", bceloss, self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_dice/train", diceloss, self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss/train", loss1, self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
+        diceloss = self.loss_func1(outputs, y)
+        bceloss = self.loss_func2(outputs, y)
+        loss1 = self.loss_func(outputs, y)
+        madloss = torch.abs(outputs - y).mean()
+        diceloss = self.all_gather(diceloss)
+        bceloss = self.all_gather(bceloss)
+        madloss = self.all_gather(madloss)
+        mseloss = self.all_gather(mseloss)
+        loss1g = self.all_gather(loss1)
+        self.losses['diceloss'].append(diceloss.mean().item())
+        self.losses['bceloss'].append(bceloss.mean().item())
+        self.losses['madloss'].append(madloss.mean().item())
+        self.losses['mseloss'].append(mseloss.mean().item())
+        self.losses['loss1'].append(loss1g.mean().item())
+        for k,l in self.losses.items():
+          if len(l) > 100:
+            del self.losses[k][0]
+
+        if self.trainer.is_global_zero and batch_idx % 100 == 0: #SethS increased batch logging interval
+          #self.writer.add_scalar('Loss/train', loss1.mean().item(), self.current_epoch)
+          self.writer.add_scalar('output/min', outputs.min().mean().item(), self.current_epoch)
+          self.writer.add_scalar('output/max', outputs.max().mean().item(), self.current_epoch)
+          self.writer.add_scalar("loss_mse/train", mean(self.losses['mseloss']), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_mad/train", mean(self.losses['madloss']), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_bce/train", mean(self.losses['bceloss']), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_dice/train", mean(self.losses['diceloss']), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
+          self.writer.add_scalar("Loss/train", mean(self.losses['loss1']), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
 
         return {"loss": loss1}
     def validation_step(self, batch, batch_idx):
         x,y,xyxys,ids= batch
-        print("validation step", x.shape, y.shape, "xyxys[:3]", xyxys[:3], len(xyxys), "ids", ids[:3], len(ids))
         #print("validation step", batch_idx, "x", x.shape, "y", y.shape, "xyxys[0]", xyxys[0], "len", len(xyxys), "ids", ids[:5])
         valid_includes = list(reversed(sorted(list(self.valid_loader.dataset.labels.keys())))) #[:self.current_epoch*5]
         if len(valid_includes) == 0:
@@ -261,7 +292,9 @@ class RegressionPLModel(pl.LightningModule):
         #print("IN NP ARRAY valid_includes:", ids, xyxys, "valid includes", valid_includes)
         batch_size = x.size(0)
         outputs = self(x)
+        #print("OUTPUTS.shape", outputs.shape, "x.shape", x.shape, "y.shape", y.shape)
         if batch_idx % 5000 == 0 and self.trainer.is_global_zero:
+          print("validation step", x.shape, y.shape, "xyxys[:3]", xyxys[:3], len(xyxys), "ids", ids[:3], len(ids))
           self.writer.add_image("pred_mask/valid", torchvision.utils.make_grid(outputs, nrow=16, normalize=True, scale_each=True), self.current_epoch) #, self.current_epoch * len(self.train_dataloaders) + batch_idx)
           self.writer.add_image("true_mask/valid", torchvision.utils.make_grid(y, nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
           self.writer.add_image("inputsdepthslice/valid", torchvision.utils.make_grid(x.mean(dim=3), nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
@@ -279,7 +312,7 @@ class RegressionPLModel(pl.LightningModule):
         #y = F.interpolate(y, (1,1), mode="area")
         #outputs = F.interpolate(outputs, (1,1), mode="area") # Reduction to a single point. Probably isn't helping.
 
-        loss1 = self.loss_func(outputs, y) + ((outputs-y) ** 2).mean()
+        #loss1 = self.loss_func(outputs, y) #+ ((outputs-y) ** 2).mean()
         y_preds = torch.sigmoid(outputs).to('cpu')
         #y_preds = #torch.clip(outputs.to('cpu'),0,1) #torch.sigmoid(outputs).to('cpu')
         #if batch_idx % 100 == 0:
@@ -320,25 +353,43 @@ class RegressionPLModel(pl.LightningModule):
               self.mask_pred[ids[i]][y1:y2, x1:x2] += y_preds[i].unsqueeze(0).float().squeeze(0).squeeze(0).numpy() # TODO: What if I don't apply np.clip while summing, but only AFTER???
             self.mask_count[ids[i]][y1:y2, x1:x2] += np.ones((y2-y1, x2-x1))
             #print("Keeping xyxys", x1,y1,x2,y2, xyxys[i], ids[i])
+
+        valid_idxs = [i for i in range(outputs.shape[0]) if ids[i] in self.val_metric_ids]
+        #mseloss = ((outputs - y) ** 2).mean()
+        if len(valid_idxs) == 0 and len(self.val_metric_ids) > 0:
+          loss1 = self.loss_func(outputs, y) #+ mseloss
+          return {"loss":loss1}
+        if len(valid_idxs) != outputs.shape[0] and len(self.val_metric_ids) > 0:
+          print("orig outputs, y shape for validation", outputs.shape, y.shape, )
+          outputs = outputs[valid_idxs]
+          y = y[valid_idxs]
+          print("updated outputs, y shape for validation set only", outputs.shape, y.shape, "x.shape", x.shape)
+        mseloss = ((outputs - y) ** 2).mean()
+        loss1 = self.loss_func(outputs, y) #+ mseloss
         diceloss = self.loss_func1(outputs, y)
         bceloss = self.loss_func2(outputs, y)
         #lossv = self.loss_func(outputs, y)
-        mseloss = ((outputs - y) ** 2).mean()
+        #mseloss = ((outputs - y) ** 2).mean()
         madloss = torch.abs(outputs - y).mean()
-
+        # TODO: CAN postpone these until the end!!!
+        diceloss = self.all_gather(diceloss)
+        bceloss = self.all_gather(bceloss)
+        madloss = self.all_gather(madloss)
+        mseloss = self.all_gather(mseloss)
+        loss1g = self.all_gather(loss1)
+        self.val_losses['diceloss'].append(diceloss.mean().item())
+        self.val_losses['bceloss'].append(bceloss.mean().item())
+        self.val_losses['madloss'].append(madloss.mean().item())
+        self.val_losses['mseloss'].append(mseloss.mean().item())
+        self.val_losses['loss1'].append(loss1g.mean().item())
         if self.trainer.is_global_zero:
           self.log("val/total_loss", loss1.item(),on_step=True, on_epoch=True, prog_bar=True)
-          self.writer.add_scalar('Loss/valid', loss1.item(), self.current_epoch)
-          self.writer.add_scalar("loss_mse/valid", mseloss, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_mad/valid", madloss, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_bce/valid", bceloss, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss_dice/valid", diceloss, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
-          self.writer.add_scalar("loss/valid", loss1, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
         return {"loss": loss1}
     def on_validation_epoch_end(self):
         print("predcount", self.predct)
         print("GATHERED predcount", self.all_gather(self.predct))
-        
+        if self.trainer.is_global_zero:
+          self.writer.add_scalar('LR', self.trainer.lr_scheduler_configs[0].scheduler.optimizer.param_groups[0]['lr'], self.current_epoch)
         for k in self.mask_pred.keys():
           self.mask_pred[k] = self.all_gather(self.mask_pred[k]).sum(0).detach().cpu().numpy()
           self.mask_count[k] = self.all_gather(self.mask_count[k]).sum(0).detach().cpu().numpy()
@@ -364,22 +415,24 @@ class RegressionPLModel(pl.LightningModule):
                 print("Warning: included validation image has no nonzero predictions!", k, self.mask_pred[k].shape)
               continue
             #print("Writing image on validation epoch end", k, self.mask_count[k].sum(), "pred mean, std", self.mask_pred[k].mean(), self.mask_pred[k].std())
+            #if len(self.valid_loader) < 500:
+            #  epochinterval = 
             if self.mask_pred[k] is None or np.product(self.mask_pred[k].shape) == 0:
               print("No mask pred for key", k, self.mask_pred[k])
             else:
-              cv2.imwrite(self.model_name+"_"+self.name+"_"+sid+"_"+k+"_scale"+str(self.cfg.scale)+"_size"+str(self.cfg.size)+"_tile_size"+str(self.cfg.tile_size)+"_stride"+str(self.cfg.stride)+"_valstride"+str(self.cfg.valid_stride)+"_batch"+str(self.cfg.train_batch_size)+"_vbs"+str(self.cfg.valid_batch_size)+"_epoch"+str(self.current_epoch)+".jpg", np.clip(self.mask_pred[k],0,1)*255) 
+              cv2.imwrite("runs/" + self.model_name+"_"+self.name+"_"+sid+"_"+k+"_scale"+str(self.cfg.scale)+"_size"+str(self.cfg.size)+"_tile_size"+str(self.cfg.tile_size)+"_stride"+str(self.cfg.stride)+"_valstride"+str(self.cfg.valid_stride)+"_batch"+str(self.cfg.train_batch_size)+"_vbs"+str(self.cfg.valid_batch_size)+"_epoch"+str(self.current_epoch)+".jpg", np.clip(self.mask_pred[k],0,1)*255) 
               self.mask_pred[k][self.mask_pred[k]==0] = self.mask_pred[k].sum()/np.count_nonzero(self.mask_pred[k])
-              self.wandb_logger.log_image(key=f"preds_{sid}_{k}", images=[np.clip(self.mask_pred[k],0,1)], caption=["probs"])
+              #self.wandb_logger.log_image(key=f"preds_{sid}_{k}", images=[np.clip(self.mask_pred[k],0,1)], caption=["probs"])
               self.writer.add_image(f'{sid}_{k}_preds', (self.mask_pred[k] - self.mask_pred[k].min()) / max(self.mask_pred[k].max()-self.mask_pred[k].min(), 0.01), self.current_epoch, dataformats="HW")
               self.writer.add_image(f'{sid}_{k}_predcount', self.mask_count[k]/max(1,self.mask_count[k].max()), self.current_epoch, dataformats="HW")
               if self.val_masks is not None and k in self.val_masks:
-                self.wandb_logger.log_image(key=f"trues_{sid}_{k}", images=[np.clip(self.val_masks[k],0,255)], caption=["probs"])
+                #self.wandb_logger.log_image(key=f"trues_{sid}_{k}", images=[np.clip(self.val_masks[k],0,255)], caption=["probs"])
                 self.writer.add_image(f'{sid}_{k}_trues', np.clip(self.val_masks[k][:,:,0],0,255), self.current_epoch, dataformats="HW") # TODO check normalization range here?
                 if self.train_masks is not None and k in self.train_masks:
-                  self.wandb_logger.log_image(key=f"traintrues_{sid}_{k}", images=[np.clip(self.train_masks[k],0,255)], caption=["probs"])
+                  #self.wandb_logger.log_image(key=f"traintrues_{sid}_{k}", images=[np.clip(self.train_masks[k],0,255)], caption=["probs"])
                   self.writer.add_image(f'{sid}_{k}_traintrues', np.clip(self.train_masks[k][:,:,0],0,255), self.current_epoch, dataformats="HW") # TODO check normalization range here?
                 if self.train_noinkmasks is not None and k in self.train_noinkmasks:
-                  self.wandb_logger.log_image(key=f"trainnoink_{sid}_{k}", images=[np.clip(self.train_noinkmasks[k],0,255)], caption=["probs"])
+                  #self.wandb_logger.log_image(key=f"trainnoink_{sid}_{k}", images=[np.clip(self.train_noinkmasks[k],0,255)], caption=["probs"])
                   self.writer.add_image(f'{sid}_{k}_trainnoink', np.clip(self.train_noinkmasks[k][:,:,0],0,255), self.current_epoch, dataformats="HW") # TODO check normalization range here?
               else:
                 print("val_masks missing", k, self.val_masks.keys())
@@ -400,6 +453,18 @@ class RegressionPLModel(pl.LightningModule):
           self.mask_pred[k] = np.zeros(pred_shape)
           self.mask_count[k] = np.zeros(pred_shape)
         self.predct = 0
+        #for k,l in self.val_losses.items():
+        #  if len(l) > 100:
+        #    del self.val_losses[k][0]
+        if self.trainer.is_global_zero: # and batch_idx % 10 == 0:
+          self.writer.add_scalar('Loss/valid', mean(self.val_losses['loss1']), self.current_epoch)
+          self.writer.add_scalar("loss_mse/valid", mean(self.val_losses['mseloss']), self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_mad/valid", mean(self.val_losses['madloss']), self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_bce/valid", mean(self.val_losses['bceloss']), self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
+          self.writer.add_scalar("loss_dice/valid", mean(self.val_losses['diceloss']), self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
+          #self.writer.add_scalar("loss/valid", loss1, self.current_epoch) # * len(self.valid_dataloaders) + batch_idx)
+        self.val_losses = defaultdict(list)
+
         '''
         if isinstance(self.hparams.pred_shape, dict):
           self.mask_pred = {}
@@ -417,7 +482,7 @@ class RegressionPLModel(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.cfg.lr)
         scheduler = get_scheduler(self.cfg, optimizer)
-        if not isinstance(self.backbone, self.InceptionI3d):
+        if not isinstance(self.backbone, self.InceptionI3d) and not isinstance(self.backbone, UNet):
           scheduler =torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=3e-4,pct_start=0.15, steps_per_epoch=self.hparams.total_steps, epochs=150,final_div_factor=1e2)
         return [optimizer],[scheduler]
 
