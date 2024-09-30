@@ -327,10 +327,11 @@ def reload_validationset():
 import numpy as np
 def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False, scale=1, CFG=None):
         print(bcolors.OKGREEN, "Gen xyxys", fragment_id, "image shape", image.shape, "mask shape", mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid, bcolors.ENDC, end=" ")
+        noink = None
         if not is_valid:
           noink = os.path.join(CFG.basepath, fragment_id + "_noink.png")
           if os.path.isfile(noink):
-            #print("Reading NO INK file:", noink, end=" ")
+            print("Reading NO INK file:", noink, end=" ")
             noink = cv2.imread(noink, 0)
           else:
             noink = None
@@ -338,6 +339,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
             #print("noink is NOT same size as mask!", noink.shape, mask.shape)
             #noink = cv2.resize(noink, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_AREA) # TODO TODO TODO: This might introduce some offset / scaling errors!
             noink = cv2.resize(noink, (max(1,noink.shape[1]//scale),max(1,noink.shape[0]//scale)), interpolation=cv2.INTER_AREA) # was fx,fy 1/scale
+            print("INK/NOINK COUNT:", mask.sum(), noink.sum(), "RATIO INK/NOINK:", mask.sum()/max(1,noink.sum()))
           if noink is None:
             noink = mask
           else:
@@ -359,14 +361,14 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
           #print("xyxys", len(xyxys), "ids", len(ids))
           expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
           print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, "ids", len(ids), bcolors.ENDC, end=" ") #, "validation", stride, fragment_mask.shape)
-          return xyxys, ids
+          return xyxys, ids, noink
         if not is_valid: # Added 4/29 SethS
           #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(noink[:,:,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < mask.shape[0] and c[1]+tile_size < mask.shape[1]] #[::int(stride)]
           xyxys = [(c[1]*stride,c[0]*stride,c[1]*stride+size,c[0]*stride+size) for c in np.argwhere(noink[::stride,::stride,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]*stride+tile_size < h and c[1]*stride+tile_size < w] #[::int(stride)]
           expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
           print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, bcolors.ENDC, end=" ") #, "training", stride, fragment_mask.shape)
           ids = [fragment_id] * len(xyxys)
-          return xyxys, ids
+          return xyxys, ids, noink
 
         x1_list = list(range(0, image.shape[1]-tile_size+1, stride))
         y1_list = list(range(0, image.shape[0]-tile_size+1, stride))
@@ -398,7 +400,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
                                     ids.append(fragment_id)
                                     xyxys.append([x1, y1, x2, y2])
                                     #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
-        return xyxys, ids
+        return xyxys, ids, noink
 
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -484,9 +486,9 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
             if fragment_id in ['20231215151901', '20231111135340', '20231122192640']: # TODO SethS need to add to this???
               myscale = scale * 2 # 2040 was extracted at 7.91 um, same as Scroll1
             if not is_valid:
-              xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
+              xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
             else:
-              xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
+              xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
             xyxys = xyxys + xyxy
             ids = ids + id
             xysizes.append(len(xyxy))
@@ -508,7 +510,7 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         #  xysizes = json.load(f, cls=NpEncoder)
         return images, masks, xyxys, ids, pads, imsizes, xysizes
       except Exception as ex:
-        print(bcolors.FAIL, ex, bcolors.ENDC)
+        print(bcolors.FAIL, "PYGOFAIL, this is bad because we are loading double!\n\n\n", ex, bcolors.ENDC)
 
     import pickle
     if os.path.exists(load_id+".pickle"):
@@ -562,9 +564,9 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         else:
           #print("Generating new xyxys for", fragment_id, image.shape, "mask", mask.shape)
           if not is_valid:
-            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
+            xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
           else:
-            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
+            xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
           #print("saving xyxys and ids", len(xyxy), len(id), "to", savename)
           #with open(savename + ".ids.json", 'w') as f:
           #  if fragment_id != cfg.valid_id:
