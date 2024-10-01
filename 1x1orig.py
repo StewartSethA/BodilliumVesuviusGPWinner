@@ -374,7 +374,7 @@ if True: #for fid in fragments:
       #train_xyxys1 = train_xyxys1 + train_xyxys
       #train_ids1 = train_ids1 + train_ids
 
-      print("TRAIN SAMPLES:", len(train_ids))
+      print("TRAIN SAMPLES:", len(train_ids1))
       sizemult = 50
       if args.model == "unet":
         sizemult = 1000
