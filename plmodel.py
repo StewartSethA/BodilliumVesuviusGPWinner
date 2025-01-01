@@ -90,6 +90,9 @@ class RegressionPLModel(pl.LightningModule):
           self.mask_count = {}
           #for k,pred_shape in self.hparams.pred_shape.items():
           for k,pred_mask in self.valid_loader.dataset.labels.items():
+            if pred_mask is None:
+              print("pred_mask is None!", k)
+              continue
             pred_shape = pred_mask.shape[:2]
             #print("Initializing mask pred and count", k, pred_shape)
             self.mask_pred[k] = np.zeros(pred_shape)
@@ -190,7 +193,11 @@ class RegressionPLModel(pl.LightningModule):
           #print("SethS NonI3d model")
           #if self.is_main:
           #  print("NonI3D Output", x.shape)
-          return x
+          pred_mask = x
+          if self.cfg.out_size is not None:
+            if pred_mask.shape[-1] != self.cfg.out_size:
+              pred_mask = F.interpolate(pred_mask, (self.cfg.out_size, self.cfg.out_size), mode='area')
+          return pred_mask
         else:
           feat_maps = self.backbone(x)
           if not isinstance(feat_maps, list) and feat_maps.shape[-2:] == x.shape[-2:]:
@@ -204,6 +211,9 @@ class RegressionPLModel(pl.LightningModule):
               print("Feat maps pooled", [(f.shape,f.min(),f.max()) for f in feat_maps_pooled])
             pred_mask = self.decoder(feat_maps_pooled)
           #print("Pred_mask", pred_mask.shape, pred_mask.min(), pred_mask.max())
+          if self.cfg.out_size is not None:
+            if pred_mask.shape[-1] != self.cfg.out_size:
+              pred_mask = F.interpolate(pred_mask, (self.cfg.out_size, self.cfg.out_size), mode='area')
           return pred_mask
     def training_step(self, batch, batch_idx):
         x, y, xys, ids = batch
@@ -233,10 +243,10 @@ class RegressionPLModel(pl.LightningModule):
           print("x.shape", x.shape, "y.shape", y.shape, "outputs.shape", outputs.shape, "y.stats", y.min(), y.max(), y.mean(), y.std(), "out.stats", outputs.min(), outputs.max(), outputs.mean(), outputs.std(), "xys", len(xys), xys[:3])
 
         if y.shape != outputs.shape:
-          print("Outputs not same shape", outputs.shape, y.shape)
+          print("Outputs not same shape", outputs.shape, "y.shape", y.shape)
           #y=F.interpolate(y,(4,4)) # TODO SethS: DISABLE ME!
-          outputs=F.interpolate(outputs,y.shape[-2:], mode="bilinear") # TODO SethS: DISABLE ME!
-          #y=F.interpolate(y,outputs.shape[-2:], mode="area") # TODO SethS: DISABLE ME!
+          #outputs=F.interpolate(outputs,y.shape[-2:], mode="bilinear") # TODO SethS: DISABLE ME!
+          y=F.interpolate(y,outputs.shape[-2:], mode="area") # TODO SethS: DISABLE ME!
         #y = F.interpolate(y, (1,1), mode="area")
         #outputs = F.interpolate(outputs, (1,1), mode="area")
         #valid_idxs = [i for i in range(outputs.shape[0]) if ids[i] in self.val_metric_ids]
@@ -293,6 +303,15 @@ class RegressionPLModel(pl.LightningModule):
         batch_size = x.size(0)
         outputs = self(x)
         #print("OUTPUTS.shape", outputs.shape, "x.shape", x.shape, "y.shape", y.shape)
+        y_shape = y.shape
+        if y.shape != outputs.shape:
+          #y=F.interpolate(y,(4,4)) # TODO SethS: DISABLE ME!
+          print("Outputs not same shape", outputs.shape, y.shape)
+          #outputs=F.interpolate(outputs,y.shape[-2:], mode="bilinear") # Auto-adjust output shape.
+          y=F.interpolate(y,outputs.shape[-2:], mode="area") # Auto-adjust output shape.
+        if batch_idx % 5000 == 0 and self.trainer.is_global_zero:
+          print("outputs.shape", outputs.shape, "y_shape", y_shape)
+        y_preds = F.interpolate(torch.sigmoid(outputs), (y_shape[-2],y_shape[-1]), mode="bilinear").to('cpu')
         if batch_idx % 5000 == 0 and self.trainer.is_global_zero:
           print("validation step", x.shape, y.shape, "xyxys[:3]", xyxys[:3], len(xyxys), "ids", ids[:3], len(ids))
           self.writer.add_image("pred_mask/valid", torchvision.utils.make_grid(outputs, nrow=16, normalize=True, scale_each=True), self.current_epoch) #, self.current_epoch * len(self.train_dataloaders) + batch_idx)
@@ -304,16 +323,10 @@ class RegressionPLModel(pl.LightningModule):
           self.writer.add_image("falsenegative/valid", torchvision.utils.make_grid(torch.relu(y-outputs), nrow=16, normalize=True, scale_each=True), self.current_epoch) # * len(self.train_dataloaders) + batch_idx)
           print("outputs.shape", outputs.shape)
           print("min,max preds", outputs.min().item(), outputs.max().item())
-        if y.shape != outputs.shape:
-          #y=F.interpolate(y,(4,4)) # TODO SethS: DISABLE ME!
-          print("Outputs not same shape", outputs.shape, y.shape)
-          outputs=F.interpolate(outputs,y.shape[-2:], mode="bilinear") # Auto-adjust output shape.
-          #y=F.interpolate(y,outputs.shape[-2:], mode="area") # Auto-adjust output shape.
         #y = F.interpolate(y, (1,1), mode="area")
         #outputs = F.interpolate(outputs, (1,1), mode="area") # Reduction to a single point. Probably isn't helping.
 
         #loss1 = self.loss_func(outputs, y) #+ ((outputs-y) ** 2).mean()
-        y_preds = torch.sigmoid(outputs).to('cpu')
         #y_preds = #torch.clip(outputs.to('cpu'),0,1) #torch.sigmoid(outputs).to('cpu')
         #if batch_idx % 100 == 0:
         #  print("post-sigmoid min,max preds", y_preds.min().item(), y_preds.max().item())
@@ -360,10 +373,11 @@ class RegressionPLModel(pl.LightningModule):
           loss1 = self.loss_func(outputs, y) #+ mseloss
           return {"loss":loss1}
         if len(valid_idxs) != outputs.shape[0] and len(self.val_metric_ids) > 0:
-          print("orig outputs, y shape for validation", outputs.shape, y.shape, )
-          outputs = outputs[valid_idxs]
-          y = y[valid_idxs]
-          print("updated outputs, y shape for validation set only", outputs.shape, y.shape, "x.shape", x.shape)
+          print("orig outputs, y shape for validation", outputs.shape, y.shape)
+          print("dropping inapplicable samples")
+          #outputs = outputs[valid_idxs]
+          #y = y[valid_idxs]
+          #print("updated outputs, y shape for validation set only", outputs.shape, y.shape, "x.shape", x.shape)
         mseloss = ((outputs - y) ** 2).mean()
         loss1 = self.loss_func(outputs, y) #+ mseloss
         diceloss = self.loss_func1(outputs, y)
@@ -372,11 +386,11 @@ class RegressionPLModel(pl.LightningModule):
         #mseloss = ((outputs - y) ** 2).mean()
         madloss = torch.abs(outputs - y).mean()
         # TODO: CAN postpone these until the end!!!
-        diceloss = self.all_gather(diceloss)
-        bceloss = self.all_gather(bceloss)
-        madloss = self.all_gather(madloss)
-        mseloss = self.all_gather(mseloss)
-        loss1g = self.all_gather(loss1)
+        #diceloss = self.all_gather(diceloss)
+        #bceloss = self.all_gather(bceloss)
+        #madloss = self.all_gather(madloss)
+        #mseloss = self.all_gather(mseloss)
+        loss1g = loss1 #self.all_gather(loss1)
         self.val_losses['diceloss'].append(diceloss.mean().item())
         self.val_losses['bceloss'].append(bceloss.mean().item())
         self.val_losses['madloss'].append(madloss.mean().item())
@@ -387,7 +401,7 @@ class RegressionPLModel(pl.LightningModule):
         return {"loss": loss1}
     def on_validation_epoch_end(self):
         print("predcount", self.predct)
-        print("GATHERED predcount", self.all_gather(self.predct))
+        #print("GATHERED predcount", self.all_gather(self.predct))
         if self.trainer.is_global_zero:
           self.writer.add_scalar('LR', self.trainer.lr_scheduler_configs[0].scheduler.optimizer.param_groups[0]['lr'], self.current_epoch)
         for k in self.mask_pred.keys():
@@ -404,6 +418,9 @@ class RegressionPLModel(pl.LightningModule):
           #print("mask_pred has keys", self.mask_pred.keys())
           #for k,pred_shape in self.hparams.pred_shape.items():
           for k,pred_mask in self.valid_loader.dataset.labels.items():
+            if pred_mask is None:
+              print("pred_mask is None!", k)
+              continue
             sid = id2scroll[k]
             pred_shape = pred_mask.shape[:2]
             self.mask_pred[k] = np.divide(self.mask_pred[k], self.mask_count[k], out=np.zeros_like(self.mask_pred[k]), where=self.mask_count[k]!=0)
@@ -449,6 +466,9 @@ class RegressionPLModel(pl.LightningModule):
         self.mask_pred = {}
         self.mask_count = {}
         for k,pred_mask in self.valid_loader.dataset.labels.items():
+          if pred_mask is None:
+              print("pred_mask is None!", k)
+              continue
           pred_shape = pred_mask.shape[:2]
           self.mask_pred[k] = np.zeros(pred_shape)
           self.mask_count[k] = np.zeros(pred_shape)

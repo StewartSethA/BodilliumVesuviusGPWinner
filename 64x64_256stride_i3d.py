@@ -975,14 +975,15 @@ def scheduler_step(scheduler, avg_val_loss, epoch):
 from plmodel import *
 
 from argparse import ArgumentParser
-#from config import CFG
+from config import CFG
 
 parser = ArgumentParser()
 parser.add_argument('--scale', type=int, default=1, required=False)
 parser.add_argument('--tile_size', type=int, default=256, required=False)
 parser.add_argument('--size', type=int, default=64, required=False)
 parser.add_argument('--stride', type=int, default=32, required=False)
-parser.add_argument('--model', type=str, default="pygoflat", required=False)
+parser.add_argument('--model', type=str, default="i3d", required=False)
+#parser.add_argument('--model', type=str, default="pygo1x1", required=False)
 parser.add_argument('--name', type=str, default="default", required=False)
 parser.add_argument('--load', type=str, default="", required=False)
 parser.add_argument('--complexity', type=int, default=16, required=False)
@@ -995,6 +996,7 @@ parser.add_argument('--minbatches', type=int, default=1000000, required=False)
 parser.add_argument('--mode', type=str, default="normal", required=False)
 parser.add_argument('--scrollsval', type=str, default="1,2,3,4", required=False)
 parser.add_argument('--fragmentsval', type=str, default="20231012184423", required=False)
+parser.add_argument('--lr', type=float, default=0.001, required=False)
 #parser.add_argument('--model', type=str, default="i3d", required=False)
 args = parser.parse_args()
 
@@ -1006,16 +1008,21 @@ CFG.train_batch_size = args.batch_size
 CFG.valid_tile_size = args.val_size
 CFG.valid_stride = args.val_stride
 CFG.valid_size = args.val_size # TODO: Allow different validation size from training size
+CFG.lr = args.lr
+cfg=CFG
+cfg.out_size = 64
 from dataloaders import *
 torch.set_float32_matmul_precision('medium')
 
 scroll1val = args.fragmentsval.split(",")
 scroll1_ids = fragments = ['20230702185753','20230929220926','20231005123336','20231012184423','20231007101619','20231016151002','20231022170901','20231031143852','20231106155351','20231210121321','20231221180251','20230820203112']
-scroll4_ids = ['20231111135340', '20231122192640', '20231210132040', '20240304141530', '20231215151901', '20240304144030', '20240304161940'] #+ scroll1val
-scroll3_ids = ['20231030220150', '20231031231220']
+#scroll4_ids = ['20231111135340', '20231122192640', '20231210132040', '20240304141530', '20231215151901', '20240304144031'] #, '20240304161940'] #+ scroll1val
+scroll4_ids = ['20231210132040', '20240304144031'] #, '20240304161940'] #+ scroll1val
+scroll3_ids = [] #['20231030220150'] #, '20231031231220']
 #scroll2_ids = []
 with open("scroll2.ids", 'r') as f:
   scroll2_ids = [line.strip() for line in f.readlines()]
+scroll2_ids = []
 #train_scrolls = "train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
 train_scrolls = CFG.basepath #"train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
 
@@ -1106,26 +1113,42 @@ if True: #for fid in fragments:
     wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
     multiplicative = lambda epoch: 0.9
     train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale)
+    import psutil
+    mem = psutil.virtual_memory()
+    print("ALL DONE LOADING. FREE MEMORY", mem.free)
     print(len(train_images))
     valid_xyxys = np.stack(valid_xyxys)
+    import psutil
+    mem = psutil.virtual_memory()
+    print("DONE STACKING VALID XYS. FREE MEMORY", mem.free)
     train_dataset = CustomDataset(
         train_images, CFG, labels=train_masks, xyxys=train_xyxys, ids=train_ids, transform=get_transforms(data='train', cfg=CFG))
+    mem = psutil.virtual_memory()
+    print("DONE CREATING TRAIN DATASET. FREE MEMORY", mem.free)
     valid_dataset = CustomDatasetTest(
         valid_images, CFG,xyxys=valid_xyxys, labels=valid_masks, ids=valid_ids, transform=get_transforms(data='valid', cfg=CFG))
+    mem = psutil.virtual_memory()
+    print("DONE CREATING VALID DATASET. FREE MEMORY", mem.free)
 
     train_loader = DataLoader(train_dataset,
                                 batch_size=CFG.train_batch_size,
                                 shuffle=True,
                                 num_workers=CFG.num_workers, pin_memory=True, drop_last=True,
                                 )
+    mem = psutil.virtual_memory()
+    print("DONE CREATING TRAIN DATALOADER. FREE MEMORY", mem.free)
     valid_loader = DataLoader(valid_dataset,
                                 batch_size=CFG.valid_batch_size,
                                 shuffle=False,
                                 num_workers=CFG.num_workers, pin_memory=True, drop_last=True)
+    mem = psutil.virtual_memory()
+    print("DONE CREATING VALID DATALOADER. FREE MEMORY", mem.free)
     if args.mode == "dataonly":
       exit()
 
     wandb_logger = WandbLogger(project="vesivus",name=run_slug+f'{enc}_finetune')
+    mem = psutil.virtual_memory()
+    print("DONE CREATING WANDB LOGGER. FREE MEMORY", mem.free)
     non_local=False
     #if "pygo" in args.model:
     #  from pygoflat import 
@@ -1136,13 +1159,16 @@ if True: #for fid in fragments:
       model=RegressionPLModel.load_from_checkpoint(args.load, enc='i3d',pred_shape=pred_shape,size=CFG.size, name=run_slug, backbone=args.model)
     '''
     #model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity)
-    model=RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader)
+    model=RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=cfg)
     if len(args.load) > 0:
       #model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", pred_shape=pred_shape, size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity)
-      model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader)
+      model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader,cfg=cfg)
     #model.train_dataloaders = train_loader
     #model.valid_dataloaders = valid_loader
     #print('FOLD : ',fold)
+    mem = psutil.virtual_memory()
+    print("DONE CREATING MODEL. FREE MEMORY", mem.free)
+
     wandb_logger.watch(model, log="all", log_freq=100)
     multiplicative = lambda epoch: 0.9
     model.valid_dataloader = valid_loader
@@ -1163,6 +1189,8 @@ if True: #for fid in fragments:
                     ],
 
     )
+    mem = psutil.virtual_memory()
+    print("DONE CREATING TRAINER. FREE MEMORY", mem.free)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
     wandb.finish()

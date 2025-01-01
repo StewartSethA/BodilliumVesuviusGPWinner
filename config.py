@@ -5,6 +5,7 @@ import numpy as np
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+
 class CFG:
     # ============== comp exp name =============
     comp_name = 'vesuvius'
@@ -38,9 +39,10 @@ class CFG:
     valid_tile_size = valid_size
     valid_stride = valid_size // 2
 
-    train_batch_size = 384 # 32
+    train_batch_size = 2 * 2 * 8 * 10 # 32
+    train_batch_size = 2 * 2 * 10 # 32
     valid_batch_size = train_batch_size
-    valid_batch_size = 256
+    #valid_batch_size = 256
     use_amp = True
 
     scheduler = 'GradualWarmupSchedulerV2'
@@ -72,7 +74,7 @@ class CFG:
     max_grad_norm = 100
 
     print_freq = 50
-    num_workers = 16
+    num_workers = 5
 
     seed = 0
 
@@ -134,6 +136,9 @@ class CFG:
     ]
     rotate = A.Compose([A.Rotate(90,p=1)])
     #rotate = A.Compose([A.Rotate(8,p=1)])
+
+print("SETHS INSTANTIATED CONFIG, batch size", CFG.train_batch_size, "size", CFG.size)
+
 def init_logger(log_file):
     from logging import getLogger, INFO, FileHandler, Formatter, StreamHandler
     logger = getLogger(__name__)

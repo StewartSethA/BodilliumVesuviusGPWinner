@@ -1,0 +1,1 @@
+ame=PygoPad; seed=1; bs=256; epochs=32; lr=0.00005; for scale in 256; do for size in 8; do stride=1;./killall.sh; python 1x1_1+1.py --scale $scale --size $size --tile_size $size --stride $stride --epochs $epochs --name $name --batch_size $bs --val_batch_size $bs --val_size $size --val_stride $stride --seed $seed --lr $lr; done; done

@@ -10,9 +10,6 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 import numpy as np
-from functools import partial
-np_load_old = partial(np.load)
-np.load = lambda *a, **k: np_load_old(*a, allow_pickle=True, **k)
 import random
 import cv2
 from scipy import ndimage
@@ -24,7 +21,6 @@ from albumentations.pytorch import ToTensorV2
 import time
 import json
 import zarr
-from collections import defaultdict
 from termcolor import colored
 class bcolors:
     HEADER = '\033[95m'
@@ -37,7 +33,6 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# Wrap .zarr array access for interchangeability with .npy arrays
 class ZarrArrayWrapper:
   def __init__(self, array):
     self.array = array
@@ -47,21 +42,228 @@ class ZarrArrayWrapper:
   def shape(self):
     return self.array.shape[1:] + self.array.shape[0:1]
 
-def read_image_stack(fragment_id,start_depth=15,end_depth=45,CFG=None,scales=[1,2,4,8,16,32,64,128,256,512,1024],npyminscale=8,chunksize=128):
-  basepath = CFG.basepath
-  print(bcolors.OKBLUE, end="")
-  images = {} # Scale-indexed set of image stacks
-  zarr_path = f"{basepath}/{fragment_id}_{chunksize}.zarr"
-  if os.path.exists(zarr_path):
-    print("Loading", zarr_path, end=" ")
-    multiresolution_array = zarr.open(zarr_path)
-    for s in [0,1,2,3,4,5,6,7,8,9]:
-      if s in multiresolution_array.keys():
-        images[2**s] = multiresolution_array[s]
-    return images
+# TODO: Auto-download or cache the dataset. Take in a directory to point to.
+# Automatically benchmark random access using .zarr, .npy in-memory for various scales. Take into account the memory ceiling.
+# Automatically gauge these things using a model in the loop? Too much. Make it simpler!
+# USE the API too, if helpful! Scale down Z vs. don't...
+
+# TODO: Sample random crops. Training dataset size is the number of ink + non-ink pixels!
+
+class PapyrusAugmentations:
+    def __init__(self, cfg):
+        self.cfg = cfg
+    def cubeTranslate(self,y):
+        x=np.random.uniform(0,1,4).reshape(2,2)
+        x[x<.4]=0
+        x[x>.633]=2
+        x[(x>.4)&(x<.633)]=1
+        mask=cv2.resize(x, (x.shape[1]*64,x.shape[0]*64), interpolation = cv2.INTER_AREA)
+        x=np.zeros((self.cfg.size,self.cfg.size,self.cfg.in_chans)).astype(np.uint8)
+        for i in range(3):
+            x=np.where(np.repeat((mask==0).reshape(self.cfg.size,self.cfg.size,1), self.cfg.in_chans, axis=2),y[:,:,i:self.cfg.in_chans+i],x)
+        return x
+    def fourth_augment(self,image):
+        image_tmp = np.zeros_like(image)
+        cropping_num = random.randint(18, 26)
+        start_idx = random.randint(0, self.cfg.in_chans - cropping_num)
+        crop_indices = np.arange(start_idx, start_idx + cropping_num)
+        start_paste_idx = random.randint(0, self.cfg.in_chans - cropping_num)
+        tmp = np.arange(start_paste_idx, cropping_num)
+        np.random.shuffle(tmp)
+        cutout_idx = random.randint(0, 2)
+        temporal_random_cutout_idx = tmp[:cutout_idx]
+        image_tmp[..., start_paste_idx : start_paste_idx + cropping_num] = image[..., crop_indices]
+        if random.random() > 0.4:
+            image_tmp[..., temporal_random_cutout_idx] = 0
+        image = image_tmp
+        return image
+    def generate_sample(self, image):
+        pass # TODO Generate / hallucinate a sample from a specific scroll!
+
+class CustomDataset(Dataset):
+    def __init__(self, path, transform=None, cfg=None, scales=[1,2,4,8,16,32,64,128,256,512]):
+        self.cfg = cfg
+        self.transform = transform
+        self.scales = scales
+        self.scaleprobs = [1./len(scales),]*len(scales)
+        self.images, self.labels, self.samplecoords, self.samplecount = load_dataset(path, cfg, scales)
+        #self.labelcoordstemp = np.array(self.samplecoords) # TODO For sampling without replacement for more efficient training
+    def __len__(self):
+        return self.samplecount
+    def __getitem__(self, idx):
+        # Pick a random batch of sample coordinates from different segments and at different scales
+        # Samplecoords contains tuple with coordinate, segment ID, and scroll number
+        # TODO: Do away with all older data formats, and do an integrity check at the time of loading!!!
+        if self.xyxys is not None:
+            t = time.time()
+            id = self.ids[idx]
+            x1,y1,x2,y2=xy=self.xyxys[idx]
+            if x2-x1 != y2-y1:
+              print("MISMATCHED XY!", x1,y1,x2,y2)
+            #if x2 > self.images[id].shape[1] or y2 > self.images[id].shape[0]:
+            if x1 >= self.images[id].shape[1] or y1 >= self.images[id].shape[0]:
+              print("OOB XY!", x1,y1,x2,y2, self.images[id].shape)
+            #print(x1,y1,x2,y2)
+            #exit()
+            #print("xy,idx", xy,idx)
+            start = 15 #0
+            end = 45 #self.images[id].shape[-1]
+            if self.images[id].shape[-1] == self.cfg.in_chans:
+              start = 0
+              end = self.cfg.in_chans
+            #elif self.randomize and not self.is_valid and self.images[id].shape[-1] > self.cfg.in_chans:
+            elif False and self.images[id].shape[-1] > self.cfg.in_chans:
+              if random.random () > 0.5:
+                # Squash or stretch channels some
+                minextent = self.cfg.in_chans // 2 # Maximum extent is the whole scroll depth.
+                extent = random.randint(minextent, self.images[id].shape[-1]+1)
+                start = random.randint(0, self.images[id].shape[-1]-extent) if extent < self.images[id].shape[-1] else 0
+                end = start + extent
+              else:
+                start = random.randint(0, self.images[id].shape[-1]-self.cfg.in_chans)
+                end = start + self.cfg.in_chans
+            #elif self.images[id].shape[-1] >= self.cfg.end_idx: #64:
+            #  start = self.cfg.start_idx
+            #  end = self.cfg.end_idx
+            #else:
+            #  end = self.images[id].shape[-1]
+            #  start = end - self.cfg.in_chans
+            #  #print("Exceeded channel depth bounds for", id, self.images[id].shape)
+            #  #return self[idx+1]
+            image = self.images[id][y1:y2,x1:x2,start:end] # SethS random depth select aug! #,self.start:self.end] #[idx]
+            #image = torch.nn.functional.pad(image,(0,0,0,(x2-x1)-image.shape[1],0,(y2-y1)-image.shape[0]), value=0)
+            if image.shape[0] != y2-y1 or image.shape[1] != x2-x1:
+              #print("Image padding!", image.shape, x1,x2,y1,y2)
+              image = np.pad(image,((0,(y2-y1)-image.shape[0]),(0,(x2-x1)-image.shape[1]),(0,0)), constant_values=0)
+              #print("New shape:", image.shape)
+            #if end-start > self.cfg.in_chans: # Stretch
+            #  image = image# TODO Seth
+            label = self.labels[id][y1:y2,x1:x2]
+            if label.shape[0] != y2-y1 or label.shape[1] != x2-x1:
+              #print("Label padding!", label.shape, x1,x2,y1,y2)
+              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
+              label = np.pad(label,((0,(y2-y1)-label.shape[0]),(0,(x2-x1)-label.shape[1]),(0,0)), constant_values=0)
+              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
+              #print("New shape:", label.shape)
+
+            if np.product(label.shape) == 0 or np.product(image.shape) == 0:
+              print("BAD image.shape", image.shape, "label.shape", label.shape, "id", id, "idx", idx, "x1,x2,y1,y2", x1, x2, y1, y2, self.images[id].shape, self.labels[id].shape)
+              return self[idx+1]
+            # TODO: NEED different random crops!!! Including rotations!
+            if image.shape[:2] != label.shape[:2]:
+              print("MISMATCHED image, label", id, image.shape, label.shape) # TODO: Should pad image to match labels???
+              return self[idx+1]
+            #print(label.shape)
+            #print("Time to get item", time.time()-t)
+            #3d rotate
+            #print("trn image.shape", image.shape, label.shape, xy, id)
+            t = time.time()
+            if random.random() < 0.05:
+              image=image.transpose(2,1,0)#(c,w,h)
+              image=self.cfg.rotate(image=image)['image']
+              image=image.transpose(0,2,1)#(c,h,w)
+              image=self.cfg.rotate(image=image)['image']
+              image=image.transpose(0,2,1)#(c,w,h)
+              image=image.transpose(2,1,0)#(h,w,c)
+              #print("Time to augment 1", time.time()-t)
+              t = time.time()
+
+            if random.random() < 0.1 and image.shape[-1] == self.cfg.in_chans:
+              image=self.fourth_augment(image)
+              #print("Time to augment 2", time.time()-t)
+              t = time.time()
+
+            if self.transform:
+                #image = ((image - image.mean()) / max(0.001, image.std())).astype(np.float32) # Standardize (removing information)
+                #image = (image - image.mean()) / max(0.001, image.std()).astype(np.float32) # Standardize (removing information)
+                #if np.product(image.shape) == 0 or image.shape[-1] != self.cfg.in_chans:
+                #  print("image.shape", image.shape, "image.dtype", image.dtype, "label.shape", label.shape, "label.dtype", label.dtype)
+                data = self.transform(image=image, mask=label)
+                image = data['image'].unsqueeze(0)
+                #print(image.shape)
+                #exit()
+                label = data['mask']/255
+                if random.random() > 0.5:
+                  label = label * torch.rand_like(label) + torch.rand_like(label) * random.random() * 0.1 # SethS 2:31 p.m. LABEL SMOOTHING
+                image = image.half().to(label.device)
+                #if end-start > self.cfg.in_chans: # Squash
+                #print("Image shape", image.shape, label.shape)
+                if image.shape[1] > self.cfg.in_chans: # Squash
+                  image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="area").squeeze(1) # TODO Seth
+                #elif end-start < self.cfg.in_chans: # Stretch
+                elif image.shape[1] < self.cfg.in_chans: # Stretch
+                  image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="trilinear").squeeze(1) # TODO Seth
+                #print("Post-resize Image shape", image.shape, label.shape)
+                #print("Final Image size", image.shape)
+                  #image = F.interpolate(image, (image.shape[0], image.shape[1], self.cfg.in_chans), mode="bilinear") # TODO Seth
+                #print("labels.shape", label.shape, self.cfg.size)
+                #print("labels.shape", label.shape)
+                #label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//self.labelscale,self.cfg.size//self.labelscale)).squeeze(0) # Label patch size is patch size divided (downscaled) by label_scale # Not needed since automatically matched to network output shape
+                #print("Time to augment 3", time.time()-t)
+            else:
+                print("No augment", image.shape)
+            #print("PT image.shape", image.shape, label.shape, xy, id)
+            return image, label,xy,id
+        else:
+            #print("xyxys is None")
+            image = self.images[idx]
+            label = self.labels[idx]
+            #3d rotate
+            image=image.transpose(2,1,0)#(c,w,h)
+            image=self.cfg.rotate(image=image)['image']
+            image=image.transpose(0,2,1)#(c,h,w)
+            image=self.cfg.rotate(image=image)['image']
+            image=image.transpose(0,2,1)#(c,w,h)
+            image=image.transpose(2,1,0)#(h,w,c)
+            image=self.fourth_augment(image)
+            if self.transform:
+                data = self.transform(image=image, mask=label)
+                image = data['image'].unsqueeze(0)
+                label = data['mask']/255
+                #label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//self.labelscale,self.cfg.size//self.labelscale)).squeeze(0)
+            return image, label
+class CustomDatasetTest(Dataset):
+    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None, is_valid=False, randomize=False, scale=1, labelscale=4):
+        self.images = images
+        self.labels = labels
+        self.xyxys=xyxys
+        self.ids = ids
+        self.cfg = cfg
+        self.transform = transform
+    def __len__(self):
+        return len(self.xyxys)
+    def __getitem__(self, idx):
+        x1,y1,x2,y2=xy=self.xyxys[idx]
+        id = self.ids[idx]
+        image = self.images[id][y1:y2,x1:x2,15:45] if self.images[id].shape[-1] > 30 else self.images[id][y1:y2,x1:x2]
+        label = self.labels[id][y1:y2,x1:x2]
+        #print("Test dataset image.shape", image.shape, "label.shape", label.shape)
+        #print("Val image.shape", image.shape, label.shape, id, xy)
+        if self.transform:
+            #image = ((image - image.mean()) / max(0.001, image.std())).astype(np.float32) # Standardize (removing information)
+            #image = (image - image.mean()) / max(0.001, image.std()) # Standardize (removing information)
+            if image.dtype == np.uint16:
+              print("Found uint16 image:", image.shape, image.dtype, id)
+              #self.images[id] = self.images[id].astype(np.uint8)
+              image = image.astype(np.uint8)
+            data = self.transform(image=image, mask=label)
+            label = data['mask']/255
+            image = data['image'].unsqueeze(0)
+            image = image.half().to(label.device)
+            if image.shape[1] > self.cfg.in_chans: # Squash
+              if image.shape[1] > 100: # 23%-70% for training.
+                image = image[:,36:110,...]
+              else:
+                image = image[:,15:45,...]
+              image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="area").squeeze(1) # TODO Seth
+            elif image.shape[1] < self.cfg.in_chans: # Stretch
+              #print("image.shape", image.shape, "less than config in_chans", self.cfg.in_chans, "cfg.size", self.cfg.size, "tile_size", self.cfg.tile_size, "stride", self.cfg.stride, "valsize,tile,stride", self.cfg.valid_size, self.cfg.valid_tile_size, self.cfg.valid_stride)
+              image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="trilinear").squeeze(1) # TODO Seth
+            #print("post resize image.shape", image.shape, label.shape)
+        #print("Val PT image.shape", image.shape, label.shape, id, xy)
+        return image, label, xy, id
 
 def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_only=False, pad0=0, pad1=0, scale=1, chunksize=128, force_mem=False, scales=[1,2,4,8,16,32,64,128,256,512]):
-  print("USING SETHS read_image_mask", fragment_id)
   basepath = CFG.basepath
   scrollsdir = "train_scrolls" if os.path.isdir("train_scrolls") else "train_scrolls2"
   images = None
@@ -77,7 +279,6 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_
     rescaled = False
     #print("Checking for", f"{basepath}/{fragment_id}_{chunksize}.zarr", "at scale", scale) # TODO: Bake in the scaling!
     mra = None
-    print("LOADING", fragment_id, "force_mem", force_mem, "start-endidx", start_idx, end_idx)
     print(bcolors.OKBLUE, end=" ")
     if scale > 4:
       pass
@@ -97,7 +298,6 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_
       print("Reading", f"{basepath}/{fragment_id}_{chunksize}.zarr")
       mra = zarr.open(f"{basepath}/{fragment_id}_{chunksize}.zarr")
     if mra is not None:
-      print("Trying to load from .zarr because .zarr path found!", fragment_id)
       try:
         if scale == 1:
           images = mra[0]
@@ -138,11 +338,9 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_
       except Exception as ex:
         rescaled = loaded = False
         print("> Exception", ex, fragment_id)
-    if not loaded:
-      print(bcolors.WARNING, "FAILED TO LOAD .zarr", fragment_id, bcolors.ENDC, end=" ")
     if loaded:
       pass
-      print(bcolors.OKGREEN, "Loaded .zarr", fragment_id, "shape", images.shape, "at scale", scale, bcolors.ENDC)
+      #print("Loaded", fragment_id, "shape", images.shape, "at scale", scale)
     elif os.path.isfile(f"{basepath}/{fragment_id}_{start_idx}-{end_idx}_{scale}.npy"):
       print("Reading", f"{basepath}/{fragment_id}_{start_idx}-{end_idx}_{scale}.npy")
       images = np.load(f"{basepath}/{fragment_id}_{start_idx}-{end_idx}_{scale}.npy") # Other parts too
@@ -151,8 +349,6 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_
       print("Reading", f"{basepath}/{fragment_id}_{start_idx}-{end_idx}.npy")
       images = np.load(f"{basepath}/{fragment_id}_{start_idx}-{end_idx}.npy", images) # Seths
       loaded = True
-    else:
-      print("UNSUPPORTED CASE, NO .NPY FOUND!", fragment_id)
     '''
     elif scale != 1 and os.path.isfile(f"{basepath}/{fragment_id}_{scale}.npy"):
       print("Reading", f"{basepath}/{fragment_id}_{scale}.npy")
@@ -185,7 +381,6 @@ def read_image_mask(fragment_id,start_idx=15,end_idx=45,CFG=None, fragment_mask_
       pad0 = (CFG.tile_size - images.shape[0] % CFG.tile_size)
       pad1 = (CFG.tile_size - images.shape[1] % CFG.tile_size)
     elif not loaded:
-      print("> LOADING from .tif stack!", fragment_id)
       images = []
       if os.path.isfile(f"{basepath}/{fragment_id}/layers/015.tif") or os.path.isfile(f"{basepath}/{fragment_id}/layers/015.jpg"):
         idxs = range(0, 156)
@@ -335,12 +530,11 @@ def reload_validationset():
 #@jit(nopython=True)
 import numpy as np
 def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size, stride, is_valid=False, scale=1, CFG=None):
-        print(bcolors.OKGREEN, "Gen xyxys", fragment_id, "image shape", image.shape, "mask shape", mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid, bcolors.ENDC, end=" ")
-        noink = None
+        print(bcolors.OKGREEN, "Gen xyxys", fragment_id, image.shape, mask.shape, fragment_mask.shape, "mask min max", mask.min(), mask.max(), "tile_size", tile_size, "size", size, "stride", stride, "is_valid", is_valid, bcolors.ENDC, end=" ")
         if not is_valid:
           noink = os.path.join(CFG.basepath, fragment_id + "_noink.png")
           if os.path.isfile(noink):
-            print("Reading NO INK file:", noink, end=" ")
+            #print("Reading NO INK file:", noink, end=" ")
             noink = cv2.imread(noink, 0)
           else:
             noink = None
@@ -348,12 +542,9 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
             #print("noink is NOT same size as mask!", noink.shape, mask.shape)
             #noink = cv2.resize(noink, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_AREA) # TODO TODO TODO: This might introduce some offset / scaling errors!
             noink = cv2.resize(noink, (max(1,noink.shape[1]//scale),max(1,noink.shape[0]//scale)), interpolation=cv2.INTER_AREA) # was fx,fy 1/scale
-            print(fragment_id, "INK/NOINK COUNT:", mask.sum(), noink.sum(), "RATIO INK/NOINK:", mask.sum()/max(1,noink.sum()))
           if noink is None:
-            print("NO NOINK FILE LOADED", fragment_id)
             noink = mask
           else:
-            print("NOINK FILE LOADED", fragment_id, noink.shape, "total no ink pixels", noink.sum())
             noink = mask[:noink.shape[0],:noink.shape[1],...] + noink[:mask.shape[0],:mask.shape[1],np.newaxis]
           # TODO Use multiplication of masks and np.argwhere to produce suggested coordinates.
         xyxys = []
@@ -369,17 +560,14 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
           #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(fragment_mask[:,:] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < fragment_mask.shape[0] and c[1]+tile_size < fragment_mask.shape[1]] #[::int(stride)]
           xyxys = [(c[1]*stride,c[0]*stride,c[1]*stride+size,c[0]*stride+size) for c in np.argwhere(fragment_mask[::stride,::stride] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]*stride+tile_size < h and c[1]*stride+tile_size < w] #[::int(stride)]
           ids = [fragment_id] * len(xyxys)
-          #print("xyxys", len(xyxys), "ids", len(ids))
-          expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
-          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, "ids", len(ids), bcolors.ENDC, end=" ") #, "validation", stride, fragment_mask.shape)
-          return xyxys, ids, noink
+          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], bcolors.ENDC, end=" ") #, "validation", stride, fragment_mask.shape)
+          return xyxys, ids
         if not is_valid: # Added 4/29 SethS
           #xyxys = [(c[1],c[0],c[1]+size,c[0]+size) for c in np.argwhere(noink[:,:,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]+tile_size < mask.shape[0] and c[1]+tile_size < mask.shape[1]] #[::int(stride)]
           xyxys = [(c[1]*stride,c[0]*stride,c[1]*stride+size,c[0]*stride+size) for c in np.argwhere(noink[::stride,::stride,0] > 0).tolist() if c[0] >= 0 and c[1] >= 0 and c[0]*stride+tile_size < h and c[1]*stride+tile_size < w] #[::int(stride)]
-          expectedlen = max(1, (image.shape[0]*image.shape[1]/(stride*stride)))
-          print(bcolors.OKCYAN, "len xyxys", len(xyxys), "first 3", xyxys[:3], "EXPECTED len:", expectedlen, "density", float(len(xyxys))/expectedlen, bcolors.ENDC, end=" ") #, "training", stride, fragment_mask.shape)
+          print(bcolors.OKCYAN, "len xyxys", len(xyxys), bcolors.ENDC, end=" ") #, "training", stride, fragment_mask.shape)
           ids = [fragment_id] * len(xyxys)
-          return xyxys, ids, noink
+          return xyxys, ids
 
         x1_list = list(range(0, image.shape[1]-tile_size+1, stride))
         y1_list = list(range(0, image.shape[0]-tile_size+1, stride))
@@ -411,7 +599,7 @@ def generate_xyxys_ids(fragment_id, image, mask, fragment_mask, tile_size, size,
                                     ids.append(fragment_id)
                                     xyxys.append([x1, y1, x2, y2])
                                     #assert image[y1:y2, x1:x2].shape==(size,size,in_chans)
-        return xyxys, ids, noink
+        return xyxys, ids
 
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -424,8 +612,7 @@ class NpEncoder(json.JSONEncoder):
         return super(NpEncoder, self).default(obj)
 
 
-def save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, cfg, noink, is_valid, scale):
-    return
+def save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, cfg, is_valid, scale):
     validlabel="valid" if is_valid else "train"
     myscale=scale
     #if is_valid:
@@ -443,8 +630,6 @@ def save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, cfg, noink, is
     np.savez(img_load_id, **images)
     masks_load_id = os.path.join(cfg.basepath, ("allfiles_masks_") + validlabel+("_scale"+str(myscale) if myscale != 1 else "")) + ".npz"
     np.savez(masks_load_id, **masks)
-    noink_load_id = os.path.join(cfg.basepath, ("allfiles_noink_") + validlabel+("_scale"+str(myscale) if myscale != 1 else "")) + ".npz"
-    np.savez(noink_load_id, **noink)
     xys_load_id = load_id+"_xys.npy"
     np.save(xys_load_id, xyxys)
     with open(load_id+"_ids.json", 'w') as f:
@@ -478,7 +663,6 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         masks_load_id = os.path.join(cfg.basepath, ("allfiles_masks_") + validlabel+("_scale"+str(myscale) if myscale != 1 else "")) + ".npz"
         masks = np.load(masks_load_id)
         masks = {k:v for k,v in masks.items()}
-        noink = {}
         try:
           with open(load_id+"_pads.json", 'r') as f:
             pads = json.load(f)
@@ -492,39 +676,24 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         except Exception as ex:
           xyxys = []
           ids = []
-          xysizes = []
           for fragment_id in tqdm(fragment_ids):
-            import psutil
-            mem = psutil.virtual_memory()
-            print(fragment_id, "FREE MEMORY", mem.free)
             image = images[fragment_id]
-            mem = psutil.virtual_memory()
-            print(fragment_id, "LOADED IMAGE; FREE MEMORY", mem.free, image.shape)
             mask = masks[fragment_id]
-            mem = psutil.virtual_memory()
-            print(fragment_id, "LOADED MASKS; FREE MEMORY", mem.free, mask.shape)
             pad0, pad1 = pads.get(fragment_id, (0,0)) # Zeropad if not found
             _, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=is_valid)
-            mem = psutil.virtual_memory()
-            print(fragment_id, "LOADED FRAGMENT MASK; FREE MEMORY", mem.free, fragment_mask.shape)
             myscale = scale
             if fragment_id in ['20231215151901', '20231111135340', '20231122192640']: # TODO SethS need to add to this???
               myscale = scale * 2 # 2040 was extracted at 7.91 um, same as Scroll1
             if not is_valid:
-              xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
+              xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
             else:
-              xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
-            noink[fragment_id] = ni
-            mem = psutil.virtual_memory()
-            print(fragment_id, "GENERATED XYS+IDS; FREE MEMORY", mem.free, len(id))
+              xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
             xyxys = xyxys + xyxy
             ids = ids + id
             xysizes.append(len(xyxy))
             pads[fragment_id] = (pad0, pad1)
-            mem = psutil.virtual_memory()
-            print(fragment_id, "CONCATENATED XYS+IDS; FREE MEMORY", mem.free, len(xyxys), len(ids))
             if is_main:
-              print("xyxy", len(set(xyxy)), "id", set(id))
+              print("xyxy", xyxy, "id", id)
 
           xys_load_id = load_id+"_xys.npy"
           np.save(xys_load_id, xyxys)
@@ -532,25 +701,23 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
             json.dump(ids, f)
           with open(load_id+"_pads.json", 'w') as f:
             json.dump(pads, f)
-        import psutil
-        mem = psutil.virtual_memory()
-        print("DONE LOADING. FREE MEMORY", mem.free)
+
         #with open(load_id+"_imsizes.json", 'r') as f:
         imsizes = [np.product(x.shape) for x in images.values()] #json.load(f, cls=NpEncoder)
         #with open(load_id+"_xysizes.json", 'r') as f:
         xysizes = [np.product(xyxys.shape)] #[len(xy) for xy in xyxys.values()] #json.load(f, cls=NpEncoder)
         #  xysizes = json.load(f, cls=NpEncoder)
-        return images, masks, xyxys, ids, pads, imsizes, xysizes, noink
+        return images, masks, xyxys, ids, pads, imsizes, xysizes
       except Exception as ex:
-        print(bcolors.FAIL, "PYGOFAIL, this is bad because we are loading double!\n\n\n", ex, bcolors.ENDC)
+        print(bcolors.FAIL, ex, bcolors.ENDC)
 
     import pickle
     if os.path.exists(load_id+".pickle"):
       with open(load_id+".pickle", 'rb') as handle:
         b = pickle.load(handle)
-      images, masks, xyxys, ids, pads, imsizes, xysizes, noink = b
-      save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, noink, cfg, is_valid, scale)
-      return images, masks, xyxys, ids, pads, imsizes, xysizes, noink
+      images, masks, xyxys, ids, pads, imsizes, xysizes = b
+      save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, cfg, is_valid, scale)
+      return images, masks, xyxys, ids, pads, imsizes, xysizes
 
     xyxys = []
     ids = []
@@ -558,32 +725,22 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
     masks = {}
     imsizes = []
     xysizes = []
-    noinks = {}
     for fragment_id in tqdm(fragment_ids):
         myscale = scale
         if fragment_id in ['20231215151901', '20231111135340', '20231122192640']: # TODO SethS need to add to this???
           myscale = scale * 2 # 2040 was extracted at 7.91 um, same as Scroll1
         #start_idx = len(fragment_ids) # WHY ????
-        import psutil
-        mem = psutil.virtual_memory()
-        print(fragment_id, "2START LOADING. FREE MEMORY", mem.free)
         if fragment_id in train_images.keys():
           image, mask = train_images[fragment_id], train_masks[fragment_id]
           pad0, pad1 = pads.get(fragment_id, (0,0))
-          _, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=False) #is_valid)
+          _, _, fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, fragment_mask_only=True, pad0=pad0, pad1=pad1, scale=myscale, force_mem=is_valid)
         else:
-          try:
-            image, mask,fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, scale=myscale, force_mem=False) #is_valid)
-          except Exception as ex:
-            print(ex, fragment_id)
-            continue
+          image, mask,fragment_mask,pad0,pad1 = read_image_mask(fragment_id, start_idx, end_idx, cfg, scale=myscale, force_mem=is_valid)
         if image is None and is_main:
           print(bcolors.WARNING, "WARNING: Failed to load images for", fragment_id, "skipping...", bcolors.ENDC)
           continue
         pads[fragment_id] = (pad0, pad1)
         images[fragment_id] = image
-        mem = psutil.virtual_memory()
-        print(fragment_id, "2LOADED IMAGE, MASK, FRAGMENT MASK. FREE MEMORY", mem.free)
         if image is None:
           masks[fragment_id] = None
           continue
@@ -606,9 +763,9 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
         else:
           #print("Generating new xyxys for", fragment_id, image.shape, "mask", mask.shape)
           if not is_valid:
-            xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
+            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.tile_size, cfg.size, cfg.stride, is_valid, scale=myscale, CFG=cfg)
           else:
-            xyxy, id, ni = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
+            xyxy, id = generate_xyxys_ids(fragment_id, image, mask, fragment_mask, cfg.valid_tile_size, cfg.valid_size, cfg.valid_stride, is_valid, scale=myscale, CFG=cfg)
           #print("saving xyxys and ids", len(xyxy), len(id), "to", savename)
           #with open(savename + ".ids.json", 'w') as f:
           #  if fragment_id != cfg.valid_id:
@@ -621,13 +778,10 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
           #  else:
           #    json.dump(xyxy, f)
         #print("xyxys", xyxys, xyxy, xyxy[-1], len(xyxys), len(xyxy))
-        noinks[fragment_id] = ni
         xyxys = xyxys + xyxy
         ids = ids + id
         imsizes.append(np.product(image.shape))
         xysizes.append(len(xyxy))
-        mem = psutil.virtual_memory()
-        print(fragment_id, "3GENERATED XYXYS, IDS. FREE MEMORY", mem.free)
 
         if is_main:
           print(bcolors.BOLD, time.time()-t, "seconds taken to generate crops for fragment", fragment_id, bcolors.ENDC)
@@ -638,8 +792,8 @@ def get_xyxys(fragment_ids, cfg, is_valid=False, start_idx=15, end_idx=45, train
       #a = [images, masks, xyxys, ids, pads, imsizes, xysizes]
       #with open(load_id, 'wb') as handle:
       #  pickle.dump(a, handle, protocol=pickle.HIGHEST_PROTOCOL)
-      save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, noinks, cfg, is_valid, scale)
-    return images, masks, xyxys, ids, pads, imsizes, xysizes, noinks
+      save_xyxys(images, masks, xyxys, ids, pads, imsizes, xysizes, cfg, is_valid, scale)
+    return images, masks, xyxys, ids, pads, imsizes, xysizes
 
 #@jit(nopython=True)
 def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_idx=45, scale=1, is_main=False):
@@ -655,7 +809,7 @@ def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_i
     if is_main:
       print("Loading training images")
     t = time.time()
-    train_images, train_masks, train_xyxys, train_ids, pads, imsizes, xysizes, noinks = get_xyxys(train_ids, CFG, False, start_idx=start_idx, end_idx=end_idx, scale=scale)
+    train_images, train_masks, train_xyxys, train_ids, pads, imsizes, xysizes = get_xyxys(train_ids, CFG, False, start_idx=start_idx, end_idx=end_idx, scale=scale)
     if is_main:
       print("TRAIN image sizes", imsizes)
       print("TRAIN xy sizes", xysizes)
@@ -665,19 +819,15 @@ def get_train_valid_dataset(CFG, train_ids=[], valid_ids=[], start_idx=15, end_i
       print("Total time taken to load training images:", t, "seconds, GB/s:", sum(imsizes)/1e9 / t)
       print("Loading validation images")
       t = time.time()
-    valid_images, valid_masks, valid_xyxys, valid_ids, _, imsizes, xysizes, _ = get_xyxys(valid_ids, CFG, True, start_idx=start_idx, end_idx=end_idx, train_images=train_images, train_masks=train_masks, train_ids=train_ids, pads=pads, scale=scale, is_main=is_main)
+    valid_images, valid_masks, valid_xyxys, valid_ids, _, imsizes, xysizes = get_xyxys(valid_ids, CFG, True, start_idx=start_idx, end_idx=end_idx, train_images=train_images, train_masks=train_masks, train_ids=train_ids, pads=pads, scale=scale, is_main=is_main)
     if is_main:
       print("VALID image sizes", imsizes)
       print("VALID xy sizes", xysizes)
       print("VALID total image size", sum(imsizes)/1e9, "GB")
       print("VALID total xy size", sum(xysizes))
-      valid_xyxys_by_segment_id = defaultdict(list)
-      for i,vid in enumerate(valid_ids):
-        valid_xyxys_by_segment_id[vid].append(valid_xyxys[i])
-      print("VALID xy size", xysizes, "per segment", {k:len(valid_xyxys_by_segment_id[k]) for k in valid_xyxys_by_segment_id.keys()}) # Count per set
       t = time.time()-t
       print("Total time taken to load validation images:", t, "seconds, GB/s:", sum(imsizes)/1e9 / t)
-    return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids, noinks
+    return train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids
 
 def get_transforms(data, cfg):
     if data == 'train':
@@ -687,225 +837,6 @@ def get_transforms(data, cfg):
 
     return aug
 
-class CustomDataset(Dataset):
-    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None, is_valid=False, randomize=False, scale=1, labelscale=4, scales=[1,2,4,8,16,32,64,128,256,512]):
-        self.images = images
-        self.cfg = cfg
-        self.labels = labels
-        self.transform = transform
-        # TODO: Only if scale != 1?
-        #print("cleaning xyxys...", len(xyxys))
-        #xids = [(xyxy,id) for (xyxy,id) in zip(xyxys,ids) if xyxy[2] < images[id].shape[1] and xyxy[3] < images[id].shape[0]]
-        #xyxys,ids = [[xyxy for xyxy,id in xids],[id for xyxy,id in xids]]
-        #print("cleaned.", len(xyxys))
-        self.xyxys=xyxys
-        self.ids = ids
-        self.rotate=cfg.rotate
-        self.is_valid = is_valid
-        self.randomize = randomize
-        self.labelscale = labelscale
-        self.scales = scales
-    def __len__(self):
-        return len(self.xyxys)
-    def cubeTranslate(self,y):
-        x=np.random.uniform(0,1,4).reshape(2,2)
-        x[x<.4]=0
-        x[x>.633]=2
-        x[(x>.4)&(x<.633)]=1
-        mask=cv2.resize(x, (x.shape[1]*64,x.shape[0]*64), interpolation = cv2.INTER_AREA)
-        x=np.zeros((self.cfg.size,self.cfg.size,self.cfg.in_chans)).astype(np.uint8)
-        for i in range(3):
-            x=np.where(np.repeat((mask==0).reshape(self.cfg.size,self.cfg.size,1), self.cfg.in_chans, axis=2),y[:,:,i:self.cfg.in_chans+i],x)
-        return x
-    def fourth_augment(self,image):
-        image_tmp = np.zeros_like(image)
-        cropping_num = random.randint(18, 26)
-        start_idx = random.randint(0, self.cfg.in_chans - cropping_num)
-        crop_indices = np.arange(start_idx, start_idx + cropping_num)
-        start_paste_idx = random.randint(0, self.cfg.in_chans - cropping_num)
-        tmp = np.arange(start_paste_idx, cropping_num)
-        np.random.shuffle(tmp)
-        cutout_idx = random.randint(0, 2)
-        temporal_random_cutout_idx = tmp[:cutout_idx]
-        image_tmp[..., start_paste_idx : start_paste_idx + cropping_num] = image[..., crop_indices]
-        if random.random() > 0.4:
-            image_tmp[..., temporal_random_cutout_idx] = 0
-        image = image_tmp
-        return image
-
-    def __getitem__(self, idx):
-        #print(self.xyxys)
-        if self.xyxys is not None:
-            t = time.time()
-            id = self.ids[idx]
-            x1,y1,x2,y2=xy=self.xyxys[idx]
-            if x2-x1 != y2-y1:
-              print("MISMATCHED XY!", x1,y1,x2,y2)
-            #if x2 > self.images[id].shape[1] or y2 > self.images[id].shape[0]:
-            if x1 >= self.images[id].shape[1] or y1 >= self.images[id].shape[0]:
-              print("OOB XY!", x1,y1,x2,y2, self.images[id].shape)
-            #print(x1,y1,x2,y2)
-            #exit()
-            #print("xy,idx", xy,idx)
-            start = 15 #0
-            end = 45 #self.images[id].shape[-1]
-            if self.images[id].shape[-1] == self.cfg.in_chans:
-              start = 0
-              end = self.cfg.in_chans
-            #elif self.randomize and not self.is_valid and self.images[id].shape[-1] > self.cfg.in_chans:
-            elif False and self.images[id].shape[-1] > self.cfg.in_chans:
-              if random.random () > 0.5:
-                # Squash or stretch channels some
-                minextent = self.cfg.in_chans // 2 # Maximum extent is the whole scroll depth.
-                extent = random.randint(minextent, self.images[id].shape[-1]+1)
-                start = random.randint(0, self.images[id].shape[-1]-extent) if extent < self.images[id].shape[-1] else 0
-                end = start + extent
-              else:
-                start = random.randint(0, self.images[id].shape[-1]-self.cfg.in_chans)
-                end = start + self.cfg.in_chans
-            #elif self.images[id].shape[-1] >= self.cfg.end_idx: #64:
-            #  start = self.cfg.start_idx
-            #  end = self.cfg.end_idx
-            #else:
-            #  end = self.images[id].shape[-1]
-            #  start = end - self.cfg.in_chans
-            #  #print("Exceeded channel depth bounds for", id, self.images[id].shape)
-            #  #return self[idx+1]
-            image = self.images[id][y1:y2,x1:x2,start:end] # SethS random depth select aug! #,self.start:self.end] #[idx]
-            #image = torch.nn.functional.pad(image,(0,0,0,(x2-x1)-image.shape[1],0,(y2-y1)-image.shape[0]), value=0)
-            if image.shape[0] != y2-y1 or image.shape[1] != x2-x1:
-              #print("Image padding!", image.shape, x1,x2,y1,y2)
-              image = np.pad(image,((0,(y2-y1)-image.shape[0]),(0,(x2-x1)-image.shape[1]),(0,0)), constant_values=0)
-              #print("New shape:", image.shape)
-            #if end-start > self.cfg.in_chans: # Stretch
-            #  image = image# TODO Seth
-            label = self.labels[id][y1:y2,x1:x2]
-            if label.shape[0] != y2-y1 or label.shape[1] != x2-x1:
-              #print("Label padding!", label.shape, x1,x2,y1,y2)
-              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
-              label = np.pad(label,((0,(y2-y1)-label.shape[0]),(0,(x2-x1)-label.shape[1]),(0,0)), constant_values=0)
-              #label = torch.nn.functional.pad(label,(0,0,0,(x2-x1)-label.shape[1],0,(y2-y1)-label.shape[0]), value=0) # SethS padding 8/27
-              #print("New shape:", label.shape)
-
-            if np.product(label.shape) == 0 or np.product(image.shape) == 0:
-              print("BAD image.shape", image.shape, "label.shape", label.shape, "id", id, "idx", idx, "x1,x2,y1,y2", x1, x2, y1, y2, self.images[id].shape, self.labels[id].shape)
-              return self[idx+1]
-            # TODO: NEED different random crops!!! Including rotations!
-            if image.shape[:2] != label.shape[:2]:
-              print("MISMATCHED image, label", id, image.shape, label.shape) # TODO: Should pad image to match labels???
-              return self[idx+1]
-            #print(label.shape)
-            #print("Time to get item", time.time()-t)
-            #3d rotate
-            #print("trn image.shape", image.shape, label.shape, xy, id)
-            t = time.time()
-            if random.random() < 0.05:
-              image=image.transpose(2,1,0)#(c,w,h)
-              image=self.rotate(image=image)['image']
-              image=image.transpose(0,2,1)#(c,h,w)
-              image=self.rotate(image=image)['image']
-              image=image.transpose(0,2,1)#(c,w,h)
-              image=image.transpose(2,1,0)#(h,w,c)
-              #print("Time to augment 1", time.time()-t)
-              t = time.time()
-
-            if random.random() < 0.1 and image.shape[-1] == self.cfg.in_chans:
-              image=self.fourth_augment(image)
-              #print("Time to augment 2", time.time()-t)
-              t = time.time()
-
-            if self.transform:
-                #image = ((image - image.mean()) / max(0.001, image.std())).astype(np.float32) # Standardize (removing information)
-                #image = (image - image.mean()) / max(0.001, image.std()).astype(np.float32) # Standardize (removing information)
-                #if np.product(image.shape) == 0 or image.shape[-1] != self.cfg.in_chans:
-                #  print("image.shape", image.shape, "image.dtype", image.dtype, "label.shape", label.shape, "label.dtype", label.dtype)
-                data = self.transform(image=image, mask=label)
-                image = data['image'].unsqueeze(0)
-                #print(image.shape)
-                #exit()
-                label = data['mask']/255
-                if random.random() > 0.5:
-                  label = label * torch.rand_like(label) + torch.rand_like(label) * random.random() * 0.1 # SethS 2:31 p.m. LABEL SMOOTHING
-                image = image.half().to(label.device)
-                #if end-start > self.cfg.in_chans: # Squash
-                #print("Image shape", image.shape, label.shape)
-                if image.shape[1] > self.cfg.in_chans: # Squash
-                  image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="area").squeeze(1) # TODO Seth
-                #elif end-start < self.cfg.in_chans: # Stretch
-                elif image.shape[1] < self.cfg.in_chans: # Stretch
-                  image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="trilinear").squeeze(1) # TODO Seth
-                #print("Post-resize Image shape", image.shape, label.shape)
-                #print("Final Image size", image.shape)
-                  #image = F.interpolate(image, (image.shape[0], image.shape[1], self.cfg.in_chans), mode="bilinear") # TODO Seth
-                #print("labels.shape", label.shape, self.cfg.size)
-                #print("labels.shape", label.shape)
-                #label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//self.labelscale,self.cfg.size//self.labelscale)).squeeze(0) # Label patch size is patch size divided (downscaled) by label_scale # Not needed since automatically matched to network output shape
-                #print("Time to augment 3", time.time()-t)
-            else:
-                print("No augment", image.shape)
-            #print("PT image.shape", image.shape, label.shape, xy, id)
-            return image, label,xy,id
-        else:
-            #print("xyxys is None")
-            image = self.images[idx]
-            label = self.labels[idx]
-            #3d rotate
-            image=image.transpose(2,1,0)#(c,w,h)
-            image=self.rotate(image=image)['image']
-            image=image.transpose(0,2,1)#(c,h,w)
-            image=self.rotate(image=image)['image']
-            image=image.transpose(0,2,1)#(c,w,h)
-            image=image.transpose(2,1,0)#(h,w,c)
-            image=self.fourth_augment(image)
-            if self.transform:
-                data = self.transform(image=image, mask=label)
-                image = data['image'].unsqueeze(0)
-                label = data['mask']/255
-                #label=F.interpolate((label/255).unsqueeze(0).float(),(self.cfg.size//self.labelscale,self.cfg.size//self.labelscale)).squeeze(0)
-            return image, label
-class CustomDatasetTest(Dataset):
-    def __init__(self, images, cfg, xyxys=None, labels=None, ids=None, transform=None, is_valid=False, randomize=False, scale=1, labelscale=4):
-        self.images = images
-        self.labels = labels
-        self.xyxys=xyxys
-        self.ids = ids
-        self.cfg = cfg
-        self.transform = transform
-    def __len__(self):
-        return len(self.xyxys)
-    def __getitem__(self, idx):
-        x1,y1,x2,y2=xy=self.xyxys[idx]
-        id = self.ids[idx]
-        if self.images[id].shape is None or len(self.images[id].shape) == 0:
-          print("bad id", set(id), idx)
-          return self[random.randint(0,len(self))]
-        image = self.images[id][y1:y2,x1:x2,15:45] if self.images[id].shape[-1] > 30 else self.images[id][y1:y2,x1:x2]
-        label = self.labels[id][y1:y2,x1:x2]
-        #print("Test dataset image.shape", image.shape, "label.shape", label.shape)
-        #print("Val image.shape", image.shape, label.shape, id, xy)
-        if self.transform:
-            #image = ((image - image.mean()) / max(0.001, image.std())).astype(np.float32) # Standardize (removing information)
-            #image = (image - image.mean()) / max(0.001, image.std()) # Standardize (removing information)
-            if image.dtype == np.uint16:
-              print("Found uint16 image:", image.shape, image.dtype, id)
-              #self.images[id] = self.images[id].astype(np.uint8)
-              image = image.astype(np.uint8)
-            data = self.transform(image=image, mask=label)
-            label = data['mask']/255
-            image = data['image'].unsqueeze(0)
-            image = image.half().to(label.device)
-            if image.shape[1] > self.cfg.in_chans: # Squash
-              if image.shape[1] > 100: # 23%-70% for training.
-                image = image[:,36:110,...]
-              else:
-                image = image[:,15:45,...]
-              image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="area").squeeze(1) # TODO Seth
-            elif image.shape[1] < self.cfg.in_chans: # Stretch
-              #print("image.shape", image.shape, "less than config in_chans", self.cfg.in_chans, "cfg.size", self.cfg.size, "tile_size", self.cfg.tile_size, "stride", self.cfg.stride, "valsize,tile,stride", self.cfg.valid_size, self.cfg.valid_tile_size, self.cfg.valid_stride)
-              image = F.interpolate(image.unsqueeze(1), (self.cfg.in_chans, image.shape[2], image.shape[3]), mode="trilinear").squeeze(1) # TODO Seth
-            #print("post resize image.shape", image.shape, label.shape)
-        #print("Val PT image.shape", image.shape, label.shape, id, xy)
-        return image, label, xy, id
 
 
 
@@ -920,7 +851,6 @@ id2scroll.update({v:"2" for v in scroll2_ids})
 id2scroll.update({v:"3" for v in scroll3_ids})
 id2scroll.update({v:"4" for v in scroll4_ids})
 
-# THIS IS NEEDED!!!
 def custom_collate_fn(data): #images=None, labels=None, xys=None, ids=None):
   #print(data)
   images = [d[0] for d in data]

@@ -413,20 +413,21 @@ class InceptionI3d(nn.Module):
             self.add_module(k, self.end_points[k])
         
     def forward(self, x):
+        #self.iter = 0 # TODO SethS Comment!
         if self.iter % 5000 == 0 and self.is_main:
-          print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+          print("input shape", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16", file=sys.stderr)
         if self.forward_features:
             features=[]
             if self.iter % 5000 == 0 and self.is_main:
-              print("x.shape", x.shape)
+              print("x.shape", x.shape, file=sys.stderr)
             for end_point in self.VALID_ENDPOINTS:
                 if end_point in self.end_points:
                     x = self._modules[end_point](x) # use _modules to work with dataparallel
                     if self.iter % 5000 == 0 and self.is_main:
-                      print("end_point", end_point, x.shape)
+                      print("end_point", end_point, x.shape, file=sys.stderr)
                     #print("I3D", end_point, self._modules[end_point].weight.shape, 2 * np.product(self._modules[end_point].weight.shape)/1000000, "MB weights", x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16 activations")
                     if self.iter % 5000 == 0 and self.is_main:
-                      print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16")
+                      print("I3D", end_point, x.shape, int(2 * np.product(x.shape) / 1000000), "MB FP16", file=sys.stderr)
                     if True or end_point in self.FEATURE_ENDPOINTS:
                         features.append(x)
             # x = self.logits(self.dropout(self.avg_pool(x)))
@@ -436,13 +437,13 @@ class InceptionI3d(nn.Module):
             outshape = list(features[-1].shape)[-3:]
             outshape[0] = 1
             if self.iter % 5000 == 0 and self.is_main:
-              print("adaptive max pool", features[-1].shape, outshape)
+              print("adaptive max pool", features[-1].shape, outshape, file=sys.stderr)
             x = torch.nn.functional.adaptive_max_pool3d(features[-1], outshape) #features
             if self.iter % 5000 == 0 and self.is_main:
-              print("post pool", x.shape)
+              print("post pool", x.shape, file=sys.stderr)
             x = x.squeeze(2)
             if self.iter % 5000 == 0 and self.is_main:
-              print("post squeeze", x.shape)
+              print("post squeeze", x.shape, file=sys.stderr)
             self.iter = 1 #+= 1
             return x
         else:

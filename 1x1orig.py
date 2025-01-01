@@ -30,6 +30,7 @@ from skimage.measure import block_reduce
 #print("Done importing")
 #print("Executable path", sys.executable)
 
+print("1x1orig.py from config import CFG")
 from config import CFG
 
 def init_logger(log_file):
@@ -92,7 +93,7 @@ parser.add_argument('--name', type=str, default="default", required=False)
 parser.add_argument('--load', type=str, default="", required=False)
 parser.add_argument('--complexity', type=int, default=16, required=False)
 parser.add_argument('--epochs', type=int, default=12, required=False)
-parser.add_argument('--batch_size', type=int, default=256, required=False)
+parser.add_argument('--batch_size', type=int, default=1, required=False)
 parser.add_argument('--val_batch_size', type=int, default=1, required=False)
 parser.add_argument('--val_size', type=int, default=224, required=False)
 parser.add_argument('--val_stride', type=int, default=112, required=False)
@@ -104,20 +105,26 @@ parser.add_argument('--scrollsval', type=str, default="1,2,3,4", required=False)
 #parser.add_argument('--fragmentsval', type=str, default="20231012184423,20231007101619,20230929220926,20231005123336,20231022170901", required=False)
 parser.add_argument('--fragmentsval', type=str, default="20231005123336,20231022170901", required=False)
 parser.add_argument('--lr', type=float, default=2e-5, required=False)
+parser.add_argument('--out_size', type=int, default=None, required=False)
 #parser.add_argument('--model', type=str, default="i3d", required=False)
 args = parser.parse_args()
 
+CFG.out_size = args.size if args.out_size is None else args.out_size
 CFG.scale = args.scale
 CFG.tile_size = args.tile_size
 CFG.size = args.size
 CFG.stride = args.stride
 CFG.train_batch_size = args.batch_size
+CFG.valid_batch_size = args.val_batch_size
 CFG.valid_tile_size = args.val_size
 CFG.valid_stride = args.val_stride
 CFG.valid_size = args.val_size # TODO: Allow different validation size from training size
 CFG.seed = args.seed
 CFG.lr = args.lr
+
+print("1x1orig.py CFG", CFG.train_batch_size, CFG.size, CFG.stride, CFG.lr)
 from dataloaders import *
+print("pdl 1x1orig.py CFG", CFG.train_batch_size, CFG.size, CFG.stride, CFG.lr)
 torch.set_float32_matmul_precision('medium')
 
 scroll1val = args.fragmentsval.split(",")
@@ -147,7 +154,7 @@ class bcolors:
 enc_i,enc,fold=0,'i3d',0
 fid = CFG.valid_id
 
-name = f'{args.model}_sc{CFG.scale}_sz{CFG.size}_st{CFG.stride}v{CFG.valid_stride}_bs{args.batch_size}_{args.name}'
+name = f'{args.model}_sc{CFG.scale}_sz{CFG.size}_os{args.out_size}_st{CFG.stride}v{CFG.valid_stride}_bs{args.batch_size}_{args.name}'
 origname = name
 #exit()
 CFG.model_dir = os.path.join("outputs", name)
@@ -211,20 +218,24 @@ if True: #for fid in fragments:
     if "4" in args.scrollsval or True:
       valid_ids = valid_ids + scroll4_ids
     if "3" in args.scrollsval:
-      valid_ids = valid_ids + scroll3_ids
+      valid_ids = valid_ids + [s for s in scroll3_ids if s != "20231030220150"]
     if "2" in args.scrollsval:
       valid_ids = valid_ids + scroll2_ids
     if "1" in args.scrollsval:
       valid_ids = valid_ids + fragments #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #print("Valid ids", valid_ids)
+    #valid_ids = scroll4_ids + fragments + scroll3_ids + scroll2_ids #['20231005123336']
     valid_ids = scroll4_ids + fragments + scroll3_ids + scroll2_ids #['20231005123336']
+    if args.scale == 1:
+      valid_ids = ['20240304144031'] + list(scroll1val) #['20231005123336']
     #valid_ids = list(set(valid_ids))[:3] #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #valid_ids = list(set(valid_ids)) + ["20240304144031",] #[:3])) #[:3] #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #valid_ids = list(set(scroll4_ids + scroll3_ids + scroll2_ids + scroll1val + fragments)) #['20231005123336']) #set(list(train_ids) + scroll4_ids + scroll2_ids + scroll3_ids)
     #train_ids = scroll1_ids + list((set(fragments) - set(valid_ids)) - set(scroll1val)) + ["20240304144031", "20231210132040", "20231215151901", "20231122192640", "20231111135340", "20240304161941", "20240304141531"] #+ set( #scroll4_ids) 
-    train_ids = scroll4_ids + scroll1_ids
+    #train_ids = scroll4_ids + scroll1_ids
+    train_ids = scroll1_ids + ["20231210132040"]
     train_ids = [id for id in train_ids if id not in scroll1val]
-    print("train_ids", train_ids)
+    print("train_ids", set(train_ids))
     '''
     for scroll_id in set(valid_ids + train_ids): #fragments + scroll4_ids + scroll2_ids + scroll3_ids:
       valid_mask_gt = cv2.imread(f"{train_scrolls}/{scroll_id}/{scroll_id}_inklabels.png", 0)
@@ -252,10 +263,10 @@ if True: #for fid in fragments:
       CFG.seed = random.randint(0,10000000)
       cfg_init(CFG)
       run_slug=name #f'training_scrolls_valid={fragment_id}_{model}_{CFG.size}size_{CFG.tile_size}tile_size_{CFG.stride}stride_{CFG.scale}scale'
-      from pytorch_lightning.loggers import WandbLogger
-      import wandb
+      #from pytorch_lightning.loggers import WandbLogger
+      #import wandb
 
-      wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
+      #wandb_logger = WandbLogger(project="vesuvius",name=run_slug+f'{enc}_finetune')
       trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator="gpu",
@@ -272,7 +283,7 @@ if True: #for fid in fragments:
                     #StochasticWeightAveraging(2e-5, annealing_epochs=5, device=None)],
       )
       if randtrial == 0:
-        train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale, is_main=trainer.is_global_zero)
+        train_images, train_masks, train_xyxys, train_ids, valid_images, valid_masks, valid_xyxys, valid_ids, train_noinkmasks = get_train_valid_dataset(CFG, train_ids, valid_ids, start_idx=0, end_idx=65, scale=CFG.scale, is_main=trainer.is_global_zero)
         train_ids, train_xyxys = [id for id in train_ids if id not in scroll1val], [train_xyxys[t] for t,v in enumerate(train_ids) if v not in scroll1val]
         #print("FINAL SET of train_ids", set(train_ids))
         train_images1, train_masks1 = ({k:v for k,v in t.items() if k in scroll1_ids and k not in scroll1val} for t in [train_images, train_masks])
@@ -285,10 +296,10 @@ if True: #for fid in fragments:
       if trainer.is_global_zero:
         print(bcolors.OKGREEN, "fragments", set(fragments), "(from dataloaders import *)", bcolors.ENDC)
       maskmax = max([t.max() for t in train_masks.values() if t is not None])
-      train_masks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
-      train_noinkmasks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
+      #train_masks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
+      #train_noinkmasks = {id:np.zeros_like(t) for id,t in train_masks.items()} #TODO SethS: Random pixel ON and OFF!
       print("train_masks", train_masks.keys())
-
+      '''
       whichmaskcandidates = [t for t in list(train_masks.keys()) if train_masks[t] is not None and len(train_masks[t].shape)>=2]
       whichmask = whichmaskcandidates[random.randint(0,len(whichmaskcandidates)-1)]
       whichmask = '20231215151901'
@@ -307,7 +318,7 @@ if True: #for fid in fragments:
       #randinkwidth,randinkheight = random.randint(1, maskshape[1]-randink[1]),randnoinkheight
 
       #randnoink,randink = (randnoink[1],randnoink[0]), (randink[1],randink[0])
-
+      '''
       '''
       randnoink = maskshape[0], maskshape[1]
       while randnoink[1] >= maskshape[1]-1:
@@ -320,6 +331,7 @@ if True: #for fid in fragments:
 
       # TODO: Set mask here and xyxys, THEN TRAIN!!!
       maskmax = 255
+      '''
       print(randtrial, "SethS train_masks shape, dtype", [(id,t.shape,t.dtype, t.min(), t.max(), t.mean(), t.std()) for (id,t) in train_masks.items()])
       print("SELECTED image for training", list(train_masks.keys())[0], "maskmax", maskmax)
       print("randink", randink, randinkwidth, randinkheight, "randnoink", randnoink, randnoinkwidth, randnoinkheight)
@@ -366,6 +378,7 @@ if True: #for fid in fragments:
       #print("Training images:", len(train_images))
       #print("len valid_xyxys", valid_xyxys, valid_xyxys.__class__.__name__)
       #valid_xyxys = np.stack(valid_xyxys) #[:100000])
+      '''
 
       #print("stacked valid_xyxys", valid_xyxys.shape)
       #print("Creating datasets")
@@ -385,6 +398,8 @@ if True: #for fid in fragments:
         train_ids1 = train_ids1 * multiplier
         train_xyxys1 = train_xyxys1 * multiplier
       print("NEW train item size", len(train_ids1))
+
+      valid_xyxys, valid_ids = [xy for i,xy in enumerate(valid_xyxys) if valid_ids[i] in valid_images.keys() and valid_ids[i] in valid_masks.keys()], [id for i,id in enumerate(valid_ids) if id in valid_images.keys() and id in valid_masks.keys()]
 
       train_dataset = CustomDataset(
         train_images1, CFG, labels=train_masks1, xyxys=train_xyxys1, ids=train_ids1, transform=get_transforms(data='train', cfg=CFG))
@@ -417,10 +432,10 @@ if True: #for fid in fragments:
       #model=RegressionPLModel(enc='i3d',pred_shape=pred_shape,size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity)
       #print("Creating model")
       #wandb_logger = None
-      model = RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=wandb_logger, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG, is_main=trainer.is_global_zero, train_masks=train_masks, train_noinkmasks = train_noinkmasks, val_metric_ids = scroll1val)
+      model = RegressionPLModel(enc='i3d',size=CFG.size, train_dataset=train_dataset, backbone=args.model, wandb_logger=None, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG, is_main=trainer.is_global_zero, train_masks=train_masks, train_noinkmasks = train_noinkmasks, val_metric_ids = scroll1val)
       if len(args.load) > 0:
         #model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", pred_shape=pred_shape, size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity)
-        model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=wandb_logger, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG)
+        model=RegressionPLModel.load_from_checkpoint(args.load, backbone=args.model, wandb_logger=None, enc="i3d", size=CFG.size, train_dataset=train_dataset, name=name, val_masks=valid_masks, complexity=args.complexity, train_loader=train_loader, valid_loader=valid_loader, cfg=CFG)
       #model.train_dataloaders = train_loader
       #model.valid_dataloaders = valid_loader
       #print('FOLD : ',fold)
@@ -496,5 +511,5 @@ if True: #for fid in fragments:
       
       trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=valid_loader) #, auto_scale_batch_size='binsearch')
 
-      wandb.finish()
+      #wandb.finish()
 
